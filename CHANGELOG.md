@@ -33,7 +33,7 @@ CI 只负责生成新版本的发布说明，不会回头改旧版本的 Release
 - 可通过 `--alert-to` 等参数接入 [himalaya](https://github.com/pimalaya/himalaya) 发送邮件告警，支持静默期、恢复通知、只发一次、试运行
 - 提供 NixOS 模块 `services.cloudflare-r2-monitor`，用 systemd timer 定时运行，token 走 `LoadCredential` 不落进 Nix store
 - 提供 nix flake 与二进制缓存配置
-- Release 附预构建裸二进制：Linux（x86_64 / aarch64）、macOS（Intel / Apple Silicon）、Windows x64，不打包成压缩包
+- Release 附预构建裸二进制：Linux（x86_64 / aarch64）、macOS（Intel / Apple Silicon）、Windows（x64 / arm64），不打包成压缩包
 
 ### 设计取舍
 
