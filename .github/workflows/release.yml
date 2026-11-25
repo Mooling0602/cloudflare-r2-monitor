@@ -167,6 +167,24 @@ jobs:
         with:
           tool: cargo-xwin
 
+      # cargo-xwin 靠 rustc 自带的 llvm-ar 软链出 llvm-lib，再用它打包 ring 的静态库。
+      # 但 rustup 默认不装 llvm-tools，llvm-ar 不存在，那条软链被静默跳过，
+      # 接着 cc-rs 报 error occurred in cc-rs: failed to find tool "llvm-lib"。
+      # 装上组件并在同目录补出 llvm-lib / llvm-dlltool，PATH 里就能直接找到。
+      - name: Install LLVM tools
+        if: ${{ matrix.xwin }}
+        run: |
+          set -eu
+          rustup component add llvm-tools
+          bin="$(dirname "$(rustc --print target-libdir)")/bin"
+          test -x "${bin}/llvm-ar" || { echo "::error::llvm-tools 没装上"; exit 1; }
+          ln -sf llvm-ar "${bin}/llvm-lib"
+          ln -sf llvm-ar "${bin}/llvm-dlltool"
+          echo "${bin}" >> "$GITHUB_PATH"
+          # 立刻验证，免得错误拖到编译 ring 时才暴露。
+          "${bin}/llvm-lib" /? > /dev/null
+          echo "llvm-ar: $("${bin}/llvm-ar" --version | head -1)"
+
       # xwin 会把 CRT 与 Windows SDK 下到缓存目录，几百兆，不缓存每次都要重拉。
       - name: Cache xwin sysroot
         if: ${{ matrix.xwin }}
