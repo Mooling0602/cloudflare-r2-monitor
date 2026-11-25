@@ -1,0 +1,28 @@
+# Build output
+/target/
+**/*.rs.bk
+
+# Nix
+/result
+/result-*
+flake.lock.bak
+
+# Local runtime state and secrets
+*.token
+*.tok
+credentials
+.credentials.yaml
+.env
+.env.*
+!.env.example
+secrets/
+*.age
+*.sops.yaml
+alert-state.json
+*.eml
+
+# Editor and OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store

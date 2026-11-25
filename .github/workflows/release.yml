@@ -1,0 +1,199 @@
+name: release
+
+# 只在推 tag 时触发。tag 形如 0.1.0（不带 v），与 Cargo.toml 的 version、CHANGELOG 的 H2 标题
+# 三者必须完全一致 —— release-note.sh 就是靠这个标题找发布说明的，对不上会直接失败。
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（形如 0.1.0），必须是已存在的 tag'
+        required: true
+        type: string
+
+permissions:
+  # 创建 Release 与上传资产需要写权限。除此之外不申请任何多余权限。
+  contents: write
+
+env:
+  # 与 ci.yml 保持一致。发布时 Linux 产物由 nix 构建，顺便推进这个缓存。
+  CACHIX_CACHE_NAME: mooling
+
+jobs:
+  # 先做一次完整校验：版本号三处一致、CHANGELOG 有对应小节、测试通过。
+  # 校验失败就不该产出任何资产 —— 一个 tag 指向坏代码比没有 Release 更糟。
+  verify:
+    name: verify
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        run: |
+          set -eu
+          # 触发方式决定版本来源：tag 推送取 tag 名，手动触发取输入。
+          ref="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          echo "version=${ref}" >> "$GITHUB_OUTPUT"
+          echo "发布版本：${ref}"
+
+      - name: Version must match Cargo.toml
+        run: |
+          set -eu
+          want="${{ steps.version.outputs.version }}"
+          got="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
+          if [ "$want" != "$got" ]; then
+            echo "::error::tag 是 ${want}，而 Cargo.toml 里是 ${got}；两者必须一致。"
+            exit 1
+          fi
+
+      - name: CHANGELOG must describe this version
+        run: |
+          set -eu
+          want="${{ steps.version.outputs.version }}"
+          if ! grep -qxF "## ${want}" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md 里没有 '## ${want}' 小节，发布说明无从生成。"
+            exit 1
+          fi
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo test
+        run: cargo test --all-targets
+
+  # Linux 产物走 nix 构建：和用户 flake 装出来的是同一个东西，
+  # 能直接推进二进制缓存，NixOS 用户装的时候就不必自己编译。
+  binary-linux:
+    name: binary (x86_64-linux)
+    needs: verify
+    runs-on: ubuntu-22.04
+    env:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v32
+
+      - name: Set up Cachix
+        if: ${{ env.CACHIX_AUTH_TOKEN != '' }}
+        uses: cachix/cachix-action@v17
+        with:
+          name: ${{ env.CACHIX_CACHE_NAME }}
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+
+      - name: nix build
+        run: nix build .#default --print-build-logs
+
+      - name: Resolve store path
+        id: out
+        run: echo "path=$(nix build .#default --no-link --print-out-paths)" >> "$GITHUB_OUTPUT"
+
+      - name: Push to Cachix
+        if: ${{ env.CACHIX_AUTH_TOKEN != '' }}
+        run: cachix push "$CACHIX_CACHE_NAME" "${{ steps.out.outputs.path }}"
+
+      # Release 资产要一个稳定的名字，别把 32 位哈希甩给下载的人。
+      # strip 掉符号后体积小很多；这里的是 nix 构建产物，本身已 strip 过。
+      - name: Collect binary
+        run: |
+          set -eu
+          mkdir -p dist
+          cp "${{ steps.out.outputs.path }}/bin/cf-r2-monitor" "dist/cf-r2-monitor-${{ needs.verify.outputs.version }}-x86_64-linux"
+          chmod +x "dist/cf-r2-monitor-${{ needs.verify.outputs.version }}-x86_64-linux"
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-x86_64-linux
+          path: dist/*
+          if-no-files-found: error
+
+  # 另外再用 cargo 直接编一份，覆盖 glibc 系发行版上「不想装 nix」的用户。
+  # 用 ubuntu-22.04（glibc 2.35）而不是 latest，是为了让产物能在更老的发行版上跑：
+  # 二进制在旧系统上编、在新系统上跑没问题，反过来不行。
+  binary-cargo:
+    name: binary (x86_64-gnu)
+    needs: verify
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --release
+        run: cargo build --release --locked
+
+      - name: Collect binary
+        run: |
+          set -eu
+          mkdir -p dist
+          cp target/release/cf-r2-monitor "dist/cf-r2-monitor-${{ needs.verify.outputs.version }}-x86_64-gnu"
+          chmod +x "dist/cf-r2-monitor-${{ needs.verify.outputs.version }}-x86_64-gnu"
+          echo "--- 依赖库（只应出现 glibc 自带的几个）---"
+          ldd "dist/cf-r2-monitor-${{ needs.verify.outputs.version }}-x86_64-gnu" || true
+          ls -l dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binary-x86_64-gnu
+          path: dist/*
+          if-no-files-found: error
+
+  # 最后一步：把两份产物和 CHANGELOG 生成的说明发成一个 Release。
+  # 这里不发 cargo（crates.io），用户明确要求只预构建二进制。
+  publish:
+    name: publish
+    needs: [verify, binary-linux, binary-cargo]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 生成 compare 链接需要完整历史与 tag，浅克隆拿不到。
+          fetch-depth: 0
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      # 首发（没有任何更早的 tag）时 previous-tag 传 -，脚本会退化成 compare/<version>。
+      - name: Render release notes
+        id: notes
+        run: |
+          set -eu
+          version="${{ needs.verify.outputs.version }}"
+          previous="$(git tag --sort=-v:refname | grep -vx "${version}" | head -1 || true)"
+          [ -n "$previous" ] || previous="-"
+          echo "上一个 tag：${previous}"
+          .github/scripts/release-note.sh \
+            "${version}" CHANGELOG.md "${{ github.repository }}" "${previous}" > notes.md
+          echo "--- 生成结果 ---"
+          cat notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          version="${{ needs.verify.outputs.version }}"
+          ls -l dist
+          gh release create "${version}" \
+            --repo "${{ github.repository }}" \
+            --title "v${version}" \
+            --notes-file notes.md \
+            dist/*

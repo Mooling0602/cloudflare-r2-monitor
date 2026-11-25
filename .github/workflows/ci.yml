@@ -1,0 +1,127 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+# CI 只读仓库。
+permissions:
+  contents: read
+
+# 同一分支推新提交时取消旧的一轮。PR 取消得激进一些，主分支上让它跑完，
+# 避免「刚 push 的那个 commit 没有完整 CI 结果」。
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # Cachix 缓存名（cachix.org 上创建的 cache）。非敏感信息，放这里；
+  # 只有 auth token 走 secret。改这里时记得同步 flake.nix 的 nixConfig，
+  # 否则推送与拉取会指向两个不同的缓存。
+  CACHIX_CACHE_NAME: mooling
+
+jobs:
+  # cargo 的三步分开跑，这样一次 CI 能同时看到格式、lint、测试的全部问题，
+  # 而不是修好格式才暴露 lint 错误。!cancelled() 保证只有整个 job 被取消时才跳过。
+  test:
+    name: cargo test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # 缓存 ~/.cargo 和 target/，key 里带 Cargo.lock 的哈希。
+      # 缓存不参与正确性，失效了只是慢一点。
+      - name: Cache cargo registry and target
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+
+      - name: cargo clippy
+        if: ${{ !cancelled() }}
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: cargo test
+        if: ${{ !cancelled() }}
+        run: cargo test --all-targets
+
+  # nix 侧验证 flake 真的能求值、能构建。和 cargo 的 job 并行，互不阻塞。
+  nix:
+    name: nix build (${{ matrix.system }})
+    runs-on: ${{ matrix.runner }}
+    # GitHub Actions 不允许在 steps.if 里直接引用 secrets（会报
+    # "Unrecognized named-value: secrets"），所以把 secret 提到 job env，
+    # 后面的步骤用 env.CACHIX_AUTH_TOKEN != '' 判空。
+    env:
+      CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - system: x86_64-linux
+            runner: ubuntu-latest
+          # aarch64-linux 默认不跑，原因：
+          #   1. GitHub 的免费 runner 以 x86_64 为主，跑 aarch64 只能交叉编译，
+          #      整个 Rust 依赖树（ring / rustls / tokio 全家桶）在 qemu 或
+          #      交叉工具链下会慢到几十分钟甚至超时；
+          #   2. 交叉编译出来的产物也无法在那台机器上验证。
+          # 真需要 ARM 缓存时，改用原生 ARM runner（如 ubuntu-24.04-arm，公开仓库免费），
+          # 把 runner 换成它、system 改成 aarch64-linux 即可。
+          # - system: aarch64-linux
+          #   runner: ubuntu-24.04-arm
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # install-nix-action 默认就会把 flakes + nix-command 写进 nix.conf，
+      # 并且默认把这个 runner 设为 trusted-user，所以不需要额外配置。
+      - name: Install Nix
+        uses: cachix/install-nix-action@v32
+
+      # 只在配了 token 时才接缓存：不带 token 时 cachix-action 本身不会失败，
+      # 但会给 nix 配上一个尚未存在的 substituter，让干净 fork 和 PR 的日志里
+      # 多一堆没用的 4xx。skipPush: true —— 这一步只负责"能拉"，推由后面
+      # 显式的 cachix push 做，这样推没推成功在日志里一眼可见。
+      - name: Set up Cachix
+        if: ${{ env.CACHIX_AUTH_TOKEN != '' }}
+        uses: cachix/cachix-action@v17
+        with:
+          name: ${{ env.CACHIX_CACHE_NAME }}
+          authToken: ${{ env.CACHIX_AUTH_TOKEN }}
+          skipPush: true
+
+      - name: nix build
+        run: nix build .#default --print-build-logs
+
+      # 解析出真正的 store path。此时产物已在 store 里，这一步只是再求值
+      # 一次，几乎不耗时。
+      - name: Resolve store path
+        id: out
+        run: echo "path=$(nix build .#default --no-link --print-out-paths)" >> "$GITHUB_OUTPUT"
+
+      # 显式推送。secret 缺失时直接跳过，构建结果仍然有效，job 仍然绿。
+      # 放在 flake check 之前：产物一构出来就推，flake check 就算慢几分钟
+      # 也不耽误下一次 CI 和用户命中缓存。
+      - name: Push to Cachix
+        if: ${{ env.CACHIX_AUTH_TOKEN != '' }}
+        run: cachix push "$CACHIX_CACHE_NAME" "${{ steps.out.outputs.path }}"
+
+      # 没配 token 时给一句明确提示，避免看日志的人以为缓存悄悄坏了。
+      - name: Note missing cache token
+        if: ${{ env.CACHIX_AUTH_TOKEN == '' }}
+        run: |
+          echo "::notice::CACHIX_AUTH_TOKEN is not set; the build succeeded but nothing was pushed to a binary cache."
+
+      # flake check 单独一步且允许失败：它会对所有输出做求值并构建所有
+      # checks，而 package 里开了 doCheck 就会再跑一遍 cargo test，CI 时间
+      # 明显变长。这一步失败也不该挡住已经构建出来的产物缓存。
+      - name: nix flake check
+        continue-on-error: true
+        run: nix flake check --print-build-logs

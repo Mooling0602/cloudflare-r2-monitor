@@ -1,0 +1,56 @@
+#!/bin/sh
+# Refuse a commit that stages a credential.
+#
+# `.gitignore` only hides files from `git add`; it cannot stop `git add -f` or a
+# generated file that happens to carry a token. This hook inspects what is
+# actually staged, so a secret cannot reach a commit even when the ignore list
+# was bypassed or was never updated for a new file name.
+set -eu
+
+# Cloudflare API tokens are 40 characters; account ids are 32 hex characters.
+# himalaya keeps the SMTP password in its config as `auth.raw`/`password.raw`.
+# The scanner has to catch a value pasted into a config file, not a placeholder,
+# so every pattern requires enough characters to be plausibly live.
+PATTERNS='(CF_API_TOKEN|CLOUDFLARE_API_TOKEN|API_TOKEN)[[:space:]]*[:=][[:space:]]*["'"'"']?[A-Za-z0-9_-]{20,}
+(CF_ACCOUNT_ID|CLOUDFLARE_ACCOUNT_ID)[[:space:]]*[:=][[:space:]]*["'"'"']?[0-9a-f]{32}
+--api-token[[:space:]]+["'"'"']?[A-Za-z0-9_-]{30,}
+(auth|password)\.raw[[:space:]]*=[[:space:]]*["'"'"'][^"'"'"']{8,}
+gh[pousr]_[A-Za-z0-9]{36,}
+sk-[A-Za-z0-9]{32,}'
+
+# The placeholders the docs and examples ship with must stay legal, or the hook
+# would reject the repository's own files. Every one of them is an obvious
+# placeholder rather than a random-looking value: a fake credential that reads
+# like a live one teaches the wrong habit, so the docs use `YOUR_ACCOUNT_ID` and
+# this list stays short.
+ALLOW='\$\{?[A-Z_]+\}?|YOUR_|your-|<[a-z-]+>|xxxx|example|placeholder|test-token'
+
+# `while read` on newline-separated names stays correct for paths containing
+# spaces, and the loop body reports on stderr while echoing a marker to stdout.
+# The markers are captured, so the count survives the pipe: a plain
+# `status=1` inside the loop would be lost with the subshell.
+report=$(
+  git diff --cached --name-only --diff-filter=ACMR |
+  while IFS= read -r file; do
+    [ -f "$file" ] || continue
+    # Binary files have nothing to scan and `grep` would report a false pass.
+    grep -Iq . "$file" 2>/dev/null || continue
+    found=$(grep -EnI -e "$PATTERNS" "$file" 2>/dev/null | grep -Eiv "$ALLOW" || true)
+    if [ -n "$found" ]; then
+      echo "pre-commit: refusing to commit a credential in $file" >&2
+      printf '%s\n' "$found" | while IFS= read -r line; do
+        echo "  line ${line%%:*}" >&2
+      done
+      echo blocked
+    fi
+  done
+)
+
+if [ -n "$report" ]; then
+  echo '' >&2
+  echo 'Read the value from the environment instead: CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID.' >&2
+  echo 'For the NixOS module keep the token in a file outside the repository and' >&2
+  echo 'point `services.cloudflare-r2-monitor.apiTokenFile` at it.' >&2
+  echo 'Commit again once the value is gone from the staged copy.' >&2
+  exit 1
+fi
