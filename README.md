@@ -32,6 +32,7 @@ NixOS 用模块更省事，见下面的 [NixOS 部署](#nixos-部署)。
 | macOS Intel | `cf-r2-monitor-x86_64-darwin` |
 | macOS Apple Silicon | `cf-r2-monitor-aarch64-darwin` |
 | Windows x64 | `cf-r2-monitor-x86_64-windows.exe` |
+| Windows arm64 | `cf-r2-monitor-aarch64-windows.exe` |
 
 Linux 是动态链接的，只依赖 glibc 自带的那几个库，glibc 2.35+ 都能跑。以 x86_64 Linux 为例：
 

@@ -141,13 +141,15 @@ jobs:
             os: ubuntu-22.04
             name: x86_64-windows
             xwin: true
-          # Windows arm64 暂不发布，原因：上游的 ring 需要为 aarch64-pc-windows-msvc
-          # 编汇编，而 cargo-xwin 的 clang-cl 后端在这条链路上还没跑通过；
-          # 等有人真的需要时再补，而不是先挂一个 red 的 job。
-          # - target: aarch64-pc-windows-msvc
-          #   os: windows-11-arm
-          #   name: aarch64-windows
-          #   xwin: false
+            xwin_compiler: clang-cl
+          # Windows arm64 必须用 clang 驱动而不是 clang-cl：ring 的 build.rs 对
+          # aarch64-windows 会强制把编译器换成 clang，而它传的是 MSVC 风格的
+          # /imsvc 参数，纯 clang 不认，报 no such file or directory: '/imsvc'。
+          - target: aarch64-pc-windows-msvc
+            os: ubuntu-22.04
+            name: aarch64-windows
+            xwin: true
+            xwin_compiler: clang
     steps:
       - uses: actions/checkout@v4
 
@@ -197,7 +199,8 @@ jobs:
         run: |
           set -eu
           if [ "${{ matrix.xwin }}" = "true" ]; then
-            cargo xwin build --release --locked --target "${{ matrix.target }}"
+            XWIN_CROSS_COMPILER="${{ matrix.xwin_compiler }}" \
+              cargo xwin build --release --locked --target "${{ matrix.target }}"
           else
             cargo build --release --locked --target "${{ matrix.target }}"
           fi
