@@ -69,10 +69,12 @@ jobs:
       - name: cargo test
         run: cargo test --all-targets
 
-  # Linux 产物走 nix 构建：和用户 flake 装出来的是同一个东西，
-  # 能直接推进二进制缓存，NixOS 用户装的时候就不必自己编译。
-  binary-linux:
-    name: binary (x86_64-linux)
+  # 这个 job 只负责把产物推进 Cachix，不发 Release 资产。
+  # nix 构建出来的二进制，ELF interpreter 与 RUNPATH 都指向 /nix/store 里的 glibc，
+  # 在没有对应 store 路径的机器上根本起不来（实测报 cannot execute: required file not found）。
+  # NixOS 用户本来就走 flake 装，不需要这个文件。
+  cache-linux:
+    name: cache (x86_64-linux)
     needs: verify
     runs-on: ubuntu-22.04
     env:
@@ -102,27 +104,12 @@ jobs:
         if: ${{ env.CACHIX_AUTH_TOKEN != '' }}
         run: cachix push "$CACHIX_CACHE_NAME" "${{ steps.out.outputs.path }}"
 
-      # Release 资产要一个稳定的名字，别把 32 位哈希甩给下载的人。
-      # strip 掉符号后体积小很多；这里的是 nix 构建产物，本身已 strip 过。
-      - name: Collect binary
-        run: |
-          set -eu
-          mkdir -p dist
-          cp "${{ steps.out.outputs.path }}/bin/cf-r2-monitor" "dist/cf-r2-monitor-${{ needs.verify.outputs.version }}-x86_64-linux"
-          chmod +x "dist/cf-r2-monitor-${{ needs.verify.outputs.version }}-x86_64-linux"
-          ls -l dist
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: binary-x86_64-linux
-          path: dist/*
-          if-no-files-found: error
-
-  # 另外再用 cargo 直接编一份，覆盖 glibc 系发行版上「不想装 nix」的用户。
+  # 唯一对外发布的二进制。用 cargo 直接编，解释器是 /lib64/ld-linux-x86-64.so.2，
+  # 依赖只有 glibc 自带的那几个，任何 glibc 系发行版都能跑。
   # 用 ubuntu-22.04（glibc 2.35）而不是 latest，是为了让产物能在更老的发行版上跑：
   # 二进制在旧系统上编、在新系统上跑没问题，反过来不行。
   binary-cargo:
-    name: binary (x86_64-gnu)
+    name: binary (x86_64-linux)
     needs: verify
     runs-on: ubuntu-22.04
     steps:
@@ -140,24 +127,30 @@ jobs:
       - name: Collect binary
         run: |
           set -eu
+          # 名字不带版本号，README 里才能用 latest/download/ 这种永久链接。
+          name="cf-r2-monitor-x86_64-linux"
           mkdir -p dist
-          cp target/release/cf-r2-monitor "dist/cf-r2-monitor-${{ needs.verify.outputs.version }}-x86_64-gnu"
-          chmod +x "dist/cf-r2-monitor-${{ needs.verify.outputs.version }}-x86_64-gnu"
+          cp target/release/cf-r2-monitor "dist/${name}"
+          chmod +x "dist/${name}"
+          # 解释器必须是 /lib64 下的那个；指向 /nix/store 的话这个文件在别的机器上起不来。
+          echo "--- ELF interpreter ---"
+          readelf -l "dist/${name}" | grep -i interpreter || true
           echo "--- 依赖库（只应出现 glibc 自带的几个）---"
-          ldd "dist/cf-r2-monitor-${{ needs.verify.outputs.version }}-x86_64-gnu" || true
+          ldd "dist/${name}" || true
           ls -l dist
 
       - uses: actions/upload-artifact@v4
         with:
-          name: binary-x86_64-gnu
+          name: binary-x86_64-linux
           path: dist/*
           if-no-files-found: error
 
-  # 最后一步：把两份产物和 CHANGELOG 生成的说明发成一个 Release。
+  # 最后一步：把产物和 CHANGELOG 生成的说明发成一个 Release。
   # 这里不发 cargo（crates.io），用户明确要求只预构建二进制。
+  # cache-linux 不在 needs 里：它只负责推二进制缓存，失败了也不该挡住发布。
   publish:
     name: publish
-    needs: [verify, binary-linux, binary-cargo]
+    needs: [verify, binary-cargo]
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -192,8 +185,16 @@ jobs:
           set -eu
           version="${{ needs.verify.outputs.version }}"
           ls -l dist
-          gh release create "${version}" \
-            --repo "${{ github.repository }}" \
-            --title "v${version}" \
-            --notes-file notes.md \
-            dist/*
+          # 重跑时 Release 可能已经存在（比如上次上传资产时 GitHub 抽风）。
+          # 这种情况下只补没传上去的资产，不要撞车失败。
+          if gh release view "${version}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            echo "Release ${version} 已存在，改为补传资产。"
+            gh release upload "${version}" dist/* \
+              --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "${version}" \
+              --repo "${{ github.repository }}" \
+              --title "v${version}" \
+              --notes-file notes.md \
+              dist/*
+          fi

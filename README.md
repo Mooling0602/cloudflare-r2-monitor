@@ -23,7 +23,16 @@ nix run github:Mooling0602/cloudflare-r2-monitor -- --account-id YOUR_ACCOUNT_ID
 
 NixOS 用模块更省事，见下面的 [NixOS 部署](#nixos-部署)。
 
-**其它 Linux 发行版**，下载 Release 里的二进制，或者自己编（需要 Rust 1.88+，见 `Cargo.toml` 的 `rust-version`）：
+**其它 Linux 发行版**，直接下 Release 里的二进制（动态链接，只依赖 glibc 自带的那几个库，glibc 2.35+ 都能跑）：
+
+```bash
+curl -sL -o cf-r2-monitor \
+  https://github.com/Mooling0602/cloudflare-r2-monitor/releases/latest/download/cf-r2-monitor-x86_64-linux
+chmod +x cf-r2-monitor
+sudo install -m 755 cf-r2-monitor /usr/local/bin/
+```
+
+或者自己编（需要 Rust 1.88+，见 `Cargo.toml` 的 `rust-version`）：
 
 ```bash
 cargo build --release
