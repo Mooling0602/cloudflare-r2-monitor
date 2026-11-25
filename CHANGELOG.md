@@ -13,7 +13,7 @@ CI 只负责生成新版本的发布说明，不会回头改旧版本的 Release
 ## Header
 
 > [!NOTE]
-> 安装方式见 [README](README.md) 的「安装」一节。从源码构建需要 Rust 1.85 或更新的版本；NixOS 用户可以直接用仓库自带的 flake。
+> 安装方式见 [README](README.md) 的「安装」一节。从源码构建需要 Rust 1.88 或更新的版本；NixOS 用户可以直接用仓库自带的 flake。
 
 ## Endfix
 
