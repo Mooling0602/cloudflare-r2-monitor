@@ -23,7 +23,17 @@ nix run github:Mooling0602/cloudflare-r2-monitor -- --account-id YOUR_ACCOUNT_ID
 
 NixOS 用模块更省事，见下面的 [NixOS 部署](#nixos-部署)。
 
-**其它 Linux 发行版**，直接下 Release 里的二进制（动态链接，只依赖 glibc 自带的那几个库，glibc 2.35+ 都能跑）：
+**其它系统**，Release 里每个平台一个裸二进制，按自己的平台挑：
+
+| 平台 | 文件名 |
+| --- | --- |
+| Linux x86_64 | `cf-r2-monitor-x86_64-linux` |
+| Linux aarch64 | `cf-r2-monitor-aarch64-linux` |
+| macOS Intel | `cf-r2-monitor-x86_64-darwin` |
+| macOS Apple Silicon | `cf-r2-monitor-aarch64-darwin` |
+| Windows x64 | `cf-r2-monitor-x86_64-windows.exe` |
+
+Linux 是动态链接的，只依赖 glibc 自带的那几个库，glibc 2.35+ 都能跑。以 x86_64 Linux 为例：
 
 ```bash
 curl -sL -o cf-r2-monitor \
@@ -31,6 +41,16 @@ curl -sL -o cf-r2-monitor \
 chmod +x cf-r2-monitor
 sudo install -m 755 cf-r2-monitor /usr/local/bin/
 ```
+
+把文件名换成表里对应的那个即可，链接路径不用改。
+
+macOS 从浏览器下载的二进制会带隔离属性，第一次跑前清掉：
+
+```bash
+xattr -d com.apple.quarantine ./cf-r2-monitor
+```
+
+Windows 上默认的 himalaya 一般没有，邮件告警要用 `--alert-command` 指定一个自己能找到的、能从 stdin 读原始邮件并投递的程序；不用告警的话其余功能照常。
 
 或者自己编（需要 Rust 1.88+，见 `Cargo.toml` 的 `rust-version`）：
 
