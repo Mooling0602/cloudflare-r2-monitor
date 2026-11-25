@@ -184,16 +184,26 @@ jobs:
         run: |
           set -eu
           version="${{ needs.verify.outputs.version }}"
+          repo="${{ github.repository }}"
           ls -l dist
+
           # 重跑时 Release 可能已经存在（比如上次上传资产时 GitHub 抽风）。
-          # 这种情况下只补没传上去的资产，不要撞车失败。
-          if gh release view "${version}" --repo "${{ github.repository }}" >/dev/null 2>&1; then
-            echo "Release ${version} 已存在，改为补传资产。"
-            gh release upload "${version}" dist/* \
-              --repo "${{ github.repository }}" --clobber
+          # 这时只补缺的资产，已经传好的绝不去碰 —— 先删后传在接口不稳时很容易两边不讨好。
+          if gh release view "${version}" --repo "${repo}" >/dev/null 2>&1; then
+            echo "Release ${version} 已存在，检查资产是否齐全。"
+            have="$(gh release view "${version}" --repo "${repo}" --json assets --jq '.assets[].name')"
+            for f in dist/*; do
+              name="$(basename "$f")"
+              if printf '%s\n' "$have" | grep -qxF "$name"; then
+                echo "已有 ${name}，跳过。"
+              else
+                echo "补传 ${name}。"
+                gh release upload "${version}" "$f" --repo "${repo}"
+              fi
+            done
           else
             gh release create "${version}" \
-              --repo "${{ github.repository }}" \
+              --repo "${repo}" \
               --title "v${version}" \
               --notes-file notes.md \
               dist/*
