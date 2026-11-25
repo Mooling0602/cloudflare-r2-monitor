@@ -6,7 +6,7 @@
 
 每个版本节的发布说明由两段共享内容拼成：`Header` 放在第一行，`Endfix` 放在最后一行，标题本身不输出。某个版本需要不同开头或结尾时，在它自己的版本节里写 H3 级的 `Header` / `Endfix` 小节来覆盖默认值。
 
-`**full_changelog!**` 是一个占位标记，不是最终内容。CI 会把它换算成真的 `Full Changelog` 链接（`https://github.com/<owner>/<repo>/compare/<上一个 tag>...<本 tag>`），首发版本没有上一个 tag，链接退化成单个 tag 的页面。
+`**full_changelog!**` 是一个占位标记，不是最终内容。CI 会把它换算成真的 `Full Changelog` 链接（`https://github.com/<owner>/<repo>/compare/<上一个 tag>...<本 tag>`）；首发版本没有上一个 tag，链接退化成 `.../compare/<本 tag>`。
 
 CI 只负责生成新版本的发布说明，不会回头改旧版本的 Release。
 

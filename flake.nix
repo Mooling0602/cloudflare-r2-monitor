@@ -29,7 +29,7 @@
   # default list rather than appending to it.
   #
   # These two values must stay in sync with CACHIX_CACHE_NAME in
-  # .github/workflows/build.yml, which is what CI pushes to. They must also stay
+  # .github/workflows/ci.yml, which is what CI pushes to. They must also stay
   # literal strings: Nix reads `nixConfig` with a restricted evaluator, so
   # neither a `let` binding nor string interpolation is accepted there (verified
   # with Nix 2.20).
