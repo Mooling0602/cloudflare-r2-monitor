@@ -128,7 +128,7 @@ Cloudflare 会自动在 `cf-bounce.` 子域下加四条记录：
 
 发信记录挂在 `cf-bounce` 子域上，和 Email Routing 的收信记录互不干扰。
 
-**建议用子域**（如 `alert.staringplanet.top`）而不是主域：告警邮件出问题不会污染主域的发送声誉。
+**建议用子域**（如 `alert.yourdomain.com`）而不是主域：告警邮件出问题不会污染主域的发送声誉。
 
 ### 2. 把收件地址加进白名单
 
@@ -150,7 +150,7 @@ himalaya v1.2.0（nixpkgs 26.05 的版本）的 `config.sample.toml` 第 547 行
 
 ```toml
 [accounts.default]
-email = "alert@staringplanet.top"
+email = "alert@yourdomain.com"
 default = true
 
 message.send.backend.type = "smtp"
@@ -169,7 +169,7 @@ message.send.backend.auth.cmd = "cat /run/secrets/cf-email-token"
 CLI 侧不用动，现有参数照旧：
 
 ```sh
-cf-r2-monitor --alert-to you@example.com --alert-from alert@staringplanet.top
+cf-r2-monitor --alert-to you@example.com --alert-from alert@yourdomain.com
 ```
 
 `--alert-from` 里的地址必须属于已接入 Email Sending 的那个域。因为 `--alert-to` 在 Workers Free 上还必须是已验证的 destination address，两个条件要同时满足。
@@ -188,7 +188,7 @@ token 走 `LoadCredential`，和现在的 Cloudflare API token 一个套路。�
 | `EHLO` 能力列表 | `AUTH PLAIN LOGIN`、`SIZE 26214400`、`8BITMIME`、`ENHANCEDSTATUSCODES` |
 | 假 token `AUTH PLAIN` | `535 5.7.8 Authentication credentials invalid` |
 | 真 token `AUTH PLAIN` | `235 2.7.0 Authentication successful` |
-| `MAIL FROM:<noreply@staringplanet.top>` | `550 5.7.1` 发件域未接入 |
+| `MAIL FROM:<noreply@yourdomain.com>` | `550 5.7.1` 发件域未接入 |
 | REST `POST .../email/sending/send` | `{"code":10000,"message":"Authentication error"}` |
 
 **这些结果说明：** 端点和鉴权链路完全正常（真 token 能过、假 token 被拒），差的只是「域名接入 Email Sending」和「token 带上 Email Sending 权限」两件事。

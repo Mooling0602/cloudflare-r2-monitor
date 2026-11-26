@@ -1,10 +1,16 @@
 #!/bin/sh
-# Refuse a commit that stages a credential.
+# Refuse a commit that stages a credential or a hostname that is not on the
+# public allow list.
 #
 # `.gitignore` only hides files from `git add`; it cannot stop `git add -f` or a
 # generated file that happens to carry a token. This hook inspects what is
 # actually staged, so a secret cannot reach a commit even when the ignore list
 # was bypassed or was never updated for a new file name.
+#
+# Hostnames are allow-listed rather than deny-listed: the deny list would have
+# to be committed to be shared, and committing it publishes exactly the
+# hostnames it exists to hide. An allow list is safe to commit and fails closed,
+# so a new hostname has to be looked at before it can be written down.
 set -eu
 
 # Cloudflare API tokens are 40 characters; account ids are 32 hex characters.
@@ -16,14 +22,77 @@ PATTERNS='(CF_API_TOKEN|CLOUDFLARE_API_TOKEN|API_TOKEN)[[:space:]]*[:=][[:space:
 --api-token[[:space:]]+["'"'"']?[A-Za-z0-9_-]{30,}
 (auth|password)\.raw[[:space:]]*=[[:space:]]*["'"'"'][^"'"'"']{8,}
 gh[pousr]_[A-Za-z0-9]{36,}
-sk-[A-Za-z0-9]{32,}'
+sk-[A-Za-z0-9]{32,}
+[a-z][a-z0-9+.-]*://[^/?#@[:space:]:]+:[^/?#@[:space:]]{12,}@
+[?&#/](access_?token|access_?key|api_?key|token|secret|password|passwd|pwd|sig|signature|credential)[=:][A-Za-z0-9_%+.-]{16,}'
 
-# The placeholders the docs and examples ship with must stay legal, or the hook
-# would reject the repository's own files. Every one of them is an obvious
-# placeholder rather than a random-looking value: a fake credential that reads
-# like a live one teaches the wrong habit, so the docs use `YOUR_ACCOUNT_ID` and
-# this list stays short.
-ALLOW='\$\{?[A-Z_]+\}?|YOUR_|your-|<[a-z-]+>|xxxx|example|placeholder|test-token'
+# Placeholders are removed from a line before the patterns run, instead of
+# dropping the whole line when it mentions one. Dropping the line would also
+# drop a real secret sitting next to a placeholder -- `https://example.org/?access_token=...`
+# is a live token on a documentation host -- so only the placeholder itself is
+# cut, and whatever value remains still has to look harmless on its own.
+# The braces are written as character classes: in a POSIX basic regular
+# expression `\{` starts an interval, so `\$\{...\}` is a syntax error, and only
+# `[{]` is a literal brace in both GNU and BSD sed.
+STRIP_PLACEHOLDER='s/[$][{][A-Za-z_][A-Za-z0-9_]*[}]//g
+s/[$][A-Za-z_][A-Za-z0-9_]*//g
+s/YOUR_[A-Za-z0-9_]*//g
+s/your-[a-z0-9-]*//g
+s/<[a-z-]*>//g
+s/[A-Za-z0-9_]*[Xx][Xx][Xx][Xx][A-Za-z0-9_]*//g
+s/placeholder//g
+s/test-token//g'
+
+# Every hostname this repository is allowed to mention. Matching is by suffix,
+# so `api.cloudflare.com` and `sub.example.co.uk` both pass. Anything absent is
+# treated as private and blocks the commit.
+#
+#   project hosting, registries, binary caches, upstream docs
+#   reserved example domains and the doc placeholder
+#   loopback fixtures used by the integration tests
+PUBLIC_DOMAINS='
+github.com
+crates.io
+cloudflare.com
+cloudflare.net
+cachix.org
+nixos.org
+r2.dev
+example.com
+example.org
+example.net
+example.co.uk
+yourdomain.com
+local
+'
+
+# A bare hostname ending in a real TLD. Short or ambiguous suffixes (`.sh`,
+# `.co`, `.me`, `.cloud`, `.app`) stay out: they collide with file names and
+# identifiers far more often than they name a host, and a false positive here
+# blocks a legitimate commit. The trailing class stops an identifier such as
+# `password.command` from reading as a hostname; it is stripped before the
+# allow-list check.
+DOMAIN_RE='([A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?\.)+(com|org|net|top|io|dev|cn|xyz|tech|online|site|info|cc|uk|local)([^A-Za-z0-9-]|$)'
+
+# `case` matches a literal suffix here, so no glob escaping is needed.
+matches_suffix() {
+  case "$1" in
+    *".$2"|"$2") return 0 ;;
+  esac
+  return 1
+}
+
+is_public() {
+  while IFS= read -r suffix; do
+    [ -n "$suffix" ] || continue
+    if matches_suffix "$1" "$suffix"; then
+      return 0
+    fi
+  done <<EOF
+$PUBLIC_DOMAINS
+EOF
+  return 1
+}
 
 # `while read` on newline-separated names stays correct for paths containing
 # spaces, and the loop body reports on stderr while echoing a marker to stdout.
@@ -35,7 +104,7 @@ report=$(
     [ -f "$file" ] || continue
     # Binary files have nothing to scan and `grep` would report a false pass.
     grep -Iq . "$file" 2>/dev/null || continue
-    found=$(grep -EnI -e "$PATTERNS" "$file" 2>/dev/null | grep -Eiv "$ALLOW" || true)
+    found=$(sed "$STRIP_PLACEHOLDER" "$file" | grep -EnI -e "$PATTERNS" 2>/dev/null || true)
     if [ -n "$found" ]; then
       echo "pre-commit: refusing to commit a credential in $file" >&2
       printf '%s\n' "$found" | while IFS= read -r line; do
@@ -52,5 +121,33 @@ if [ -n "$report" ]; then
   echo 'For the NixOS module keep the token in a file outside the repository and' >&2
   echo 'point `services.cloudflare-r2-monitor.apiTokenFile` at it.' >&2
   echo 'Commit again once the value is gone from the staged copy.' >&2
+  exit 1
+fi
+
+# Hostnames get the same treatment: any that is not on the allow list above has
+# to be reviewed before it is written into the repository.
+unlisted=$(
+  git diff --cached --name-only --diff-filter=ACMR |
+  while IFS= read -r file; do
+    [ -f "$file" ] || continue
+    grep -Iq . "$file" 2>/dev/null || continue
+    for domain in $(grep -Eo "$DOMAIN_RE" "$file" 2>/dev/null | sed 's/[^A-Za-z0-9-]*$//' | sort -u); do
+      [ -n "$domain" ] || continue
+      if ! is_public "$domain"; then
+        echo "$file $domain"
+      fi
+    done
+  done
+)
+
+if [ -n "$unlisted" ]; then
+  echo '' >&2
+  echo 'pre-commit: refusing to commit a hostname that is not on the public list:' >&2
+  printf '%s\n' "$unlisted" | while read -r file domain; do
+    echo "  $domain  ($file)" >&2
+  done
+  echo '' >&2
+  echo 'If the hostname is yours, replace it with `yourdomain.com` or `example.org`.' >&2
+  echo 'If it really is public, add it to PUBLIC_DOMAINS in .githooks/pre-commit.' >&2
   exit 1
 fi
