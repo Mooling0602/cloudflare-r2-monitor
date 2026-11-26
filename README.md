@@ -256,6 +256,11 @@ flake 的几种接法、模块完整选项表、二进制缓存怎么配、常�
 
 设计取舍、存储算法的来龙去脉、himalaya 兼容细节、踩过的坑，都在 [CONTEXT.md](CONTEXT.md)。
 
+两份待实现的调研，记录的是「本工具现在不做、但方案已经想清楚」的部分：
+
+- [docs/cf-email.md](docs/cf-email.md) —— 用 Cloudflare Email Service 替代或备用 himalaya
+- [docs/cf-worker-integration.md](docs/cf-worker-integration.md) —— 额度逼近时让 Worker 侧自己停止调用 R2 的 Gate 协议
+
 ## License
 
 MIT

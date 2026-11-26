@@ -181,6 +181,15 @@ v1.2.0 在 SMTP 服务器对 `RCPT TO` 回 550 时，会不断重试同一次投
 - **只覆盖 R2。** 不涉及 Workers、D1、CDN 或其它 Cloudflare 产品的用量。
 - **不做写入、不做修复。** 只读 token，只输出。
 
+## 待实现的方案
+
+有两件事想清楚了但还没做，文档已经写好，放在 `docs/` 里：
+
+| 文档 | 解决什么 | 状态 |
+| --- | --- | --- |
+| [docs/cf-email.md](docs/cf-email.md) | 告警通道可以用 Cloudflare Email Service，不需要改代码，只换 himalaya 配置 | 已调研并在本机验证过端点，等接入域名 |
+| [docs/cf-worker-integration.md](docs/cf-worker-integration.md) | Worker 的 `r2_buckets` binding 不走 Access Key，禁 token 拦不住，只能让 Worker 自己停止调用 | 协议草案 |
+
 ## License
 
 MIT
