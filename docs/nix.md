@@ -443,7 +443,7 @@ Home Manager 的 `programs.himalaya` 和邮箱账号选项管理的是指定用�
 - 不要把密码直接写入 Home Manager 的 Nix 选项：生成的配置可能进入可被本机其他用户读取的 Nix store。只在配置中引用取密命令或运行时文件，并确保服务用户可以读取秘密；邮箱地址、服务器和用户名等写入生成配置的信息也可能被其他本机用户看到。没有秘密的 store 配置文件并非不能用，但必须确认公开其中的非秘密信息是可接受的。
 - 取密命令及其依赖必须在服务环境中可用；个人用户的密钥环、D-Bus 或登录会话不一定可供系统服务使用。按上一节先干跑，再以服务身份验证真实发送。
 
-Home Manager 的具体选项和生成格式随版本变化，使用前请对照自己锁定版本的 [Himalaya 模块源码](https://github.com/nix-community/home-manager/tree/master/modules/programs/himalaya)。
+参见 [Home Manager 的 Himalaya 选项手册](https://nix-community.github.io/home-manager/options/home-manager/programs/himalaya.html)。具体选项和生成格式随版本变化；该手册可能比你锁定的版本更新，使用时请对照自己锁定版本的文档或模块源码。
 
 ## token 文件怎么来
 
