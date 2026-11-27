@@ -103,6 +103,12 @@ expect_equal "rerun leaves the tag object untouched" "$(tag_object 0.2.0)" "$bef
 # what a fresh CI checkout looks like.
 fresh="$root/first-release/fresh"
 git clone --quiet --no-tags --branch main "$origin" "$fresh"
+# This case needs a checkout without the tag. --no-tags usually delivers one,
+# but local clones have kept tags anyway (Git 2.56 on the CI runner did), so
+# drop whatever the clone carried and say so in the log.
+carried=$(git -C "$fresh" tag --list)
+[ -z "$carried" ] || echo "note - the clone carried tags: $(printf '%s' "$carried" | tr '\n' ' ')"
+git -C "$fresh" tag --list | while read -r t; do git -C "$fresh" tag -d "$t" >/dev/null; done
 work=$fresh
 expect_pass "reuses the remote tag without a local one" run_tag 0.2.0 "$sha"
 expect_equal "reuse adds no tag object" "$(tag_object 0.2.0)" "$before"
