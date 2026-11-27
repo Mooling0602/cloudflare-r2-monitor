@@ -340,7 +340,7 @@ message.send.backend.port = 587
 message.send.backend.encryption.type = "start-tls"
 message.send.backend.login = "monitor@example.org"
 message.send.backend.auth.type = "password"
-message.send.backend.auth.raw = "在这里放密码"
+message.send.backend.auth.cmd = "cat /run/secrets/smtp-password"
 message.send.save-copy = false
 ```
 
@@ -375,9 +375,75 @@ v2 里 `template send` 已被删除（本项目用的是 `message send`），`ex
 
 #### 两个版本的共同点
 
-密码有两种写法：`password.raw` / `message.send.backend.auth.raw` 直接写明文，或者用命令从外部取。**尽量用命令**——`raw` 意味着密码躺在配置文件里，而这个文件还要被 sops-nix/agenix 之外的普通工具读，一旦泄漏就得改密码。`pass`、`secret-tool`、`agenix` 之类的都能当命令来源。
+密码可以直接放在受保护的运行时配置文件里，或通过命令读取单独的秘密文件。上面的 v1 示例使用 `auth.cmd`；命令本身不应包含密码。服务账号不一定有登录会话、GPG 密钥或可用的 D-Bus，因此不要假设 `pass` 或 `secret-tool` 在 systemd 服务中能用；agenix 是秘密文件的管理方式，而不是取密码命令。
 
 `--alert-account`（模块里的 `alerts.account`）对应 himalaya 的 `-a`。配置里只写了一个账号并且标了 `default = true` 时可以不管它；有多个账号就要显式指定，否则 himalaya 会报 `cannot find default account configuration`。
+
+### 邮箱凭据落地与验证
+
+`alerts.configFile` 由 himalaya 以服务用户身份直接读取，**不会**像 `apiTokenFile` 一样通过 `LoadCredential` 复制。配置文件、`auth.cmd` 读取的密码文件及其父目录都必须允许服务用户访问；例如 `/run/secrets` 下的文件如果是 `root:root`、`0400`，默认服务用户无法读取。`ProtectHome = "read-only"` 只限制写入，并不自动授予读取权限；实际权限仍取决于文件和目录。
+
+下面选一种方式准备文件；路径和账号以你的配置为准，不要把明文密码写入 Nix 表达式、仓库、命令行或 Nix store。更换 `services.cloudflare-r2-monitor.user` 时，相应更改文件属主。
+
+**sops-nix**：假设已配置 sops-nix，秘密名称分别为 `himalaya-config` 和 `smtp-password`，前者解密后的内容使用上面的 v1 配置。为 `auth.cmd` 提供 `cat`：在包含这些设置的 NixOS 模块的参数中引入 `pkgs`，并加入下面的 `systemd.services` 设置。
+
+```nix
+{
+  sops.secrets."himalaya-config" = {
+    owner = "cloudflare-r2-monitor";
+    mode = "0400";
+  };
+  sops.secrets."smtp-password" = {
+    owner = "cloudflare-r2-monitor";
+    mode = "0400";
+  };
+  services.cloudflare-r2-monitor.alerts.configFile = "/run/secrets/himalaya-config";
+  systemd.services.cloudflare-r2-monitor.path = [ pkgs.coreutils ];
+}
+```
+
+**agenix**：假设已配置 agenix，两个 `.age` 文件分别包含完整 himalaya 配置与 SMTP 密码。配置中的 `auth.cmd` 路径相应改为 `/run/agenix/smtp-password`。同样需要在模块参数中引入 `pkgs`，让服务的 PATH 包含 coreutils。
+
+```nix
+{
+  age.secrets.himalaya-config = {
+    file = ./secrets/himalaya-config.age;
+    owner = "cloudflare-r2-monitor";
+    mode = "0400";
+  };
+  age.secrets.smtp-password = {
+    file = ./secrets/smtp-password.age;
+    owner = "cloudflare-r2-monitor";
+    mode = "0400";
+  };
+  services.cloudflare-r2-monitor.alerts.configFile = "/run/agenix/himalaya-config";
+  systemd.services.cloudflare-r2-monitor.path = [ pkgs.coreutils ];
+}
+```
+
+**手动管理**：在服务账号创建后，用 root 建立受限目录并通过安全的交互式编辑器分别创建 `/etc/cf-r2-monitor/himalaya.toml` 和 `/etc/cf-r2-monitor/smtp-password`。将两文件的属主设为服务用户、权限设为 `0600`，并确保父目录允许该用户进入；配置中的 `auth.cmd` 和 `alerts.configFile` 分别指向这两个绝对路径，并像上面的示例一样将 `pkgs.coreutils` 加入服务的 `path`。不要将密码粘贴进 shell 命令或输出到日志。
+
+**验证顺序**：
+
+1. 确认收件人、发件人、SMTP 主机、端口和加密方式符合邮件服务商要求；确认服务账号能够遍历目录并读取两个文件，但不要输出其内容。
+2. 在 NixOS 配置中临时设置 `alerts.dryRun = true;`，部署后运行 `sudo systemctl start cloudflare-r2-monitor.service`，再用 `journalctl -u cloudflare-r2-monitor.service -n 100` 查看。干跑只在确实需要告警或恢复通知时输出邮件，不会调用 himalaya，也不会记录已发送状态；日志中可能包含邮箱地址和用量，请限制访问。
+3. 若当前用量未触发告警，测试期间可临时设置 `warnThreshold = 0.000001;` 和 `alerts.repeat = "0";`，以便在任一指标达到该比例时触发预览，并避免已有去重状态使测试静默。阈值必须大于零；如果各指标均低于这个值，仍不会生成邮件。测试阈值会影响真实告警判断，测试后务必还原。
+4. 将 `alerts.dryRun` 改为 `false` 并重新部署，手动启动服务，检查 journal 和收件箱。真实发送会更新去重状态，也会发送真实邮件；恢复正式阈值后可能触发一封恢复通知。完成后恢复正式阈值和重发间隔，并重新部署。退出码 1 或 2 表示用量告警，4 表示发信失败；systemd 是否标记失败还取决于 `successExitCodes`。
+
+真实发送验证依赖 SMTP 服务可用和凭据正确；干跑成功不代表 SMTP 鉴权或投递成功。
+
+### 已使用 Home Manager？
+
+Home Manager 的 `programs.himalaya` 和邮箱账号选项管理的是指定用户的环境；启用它们不会自动为 `cloudflare-r2-monitor` 系统服务配置邮箱。服务默认以独立的 `cloudflare-r2-monitor` 用户运行，使用模块中的 `alerts.package`，不一定与登录用户使用的程序或配置相同。
+
+最简单的做法仍是按上一节为服务单独准备配置和凭据。如果要复用 Home Manager 生成的配置，请先确认：
+
+- `alerts.configFile` 指向服务实际可以访问的配置文件，路径中的每级目录都允许服务用户遍历；不要假定登录用户的 home 目录对服务开放。`alerts.account` 要与配置中的账号名称匹配，或使用该配置的默认账号。
+- Home Manager 生成配置所用的版本与服务 `alerts.package` 指定的 Himalaya 版本兼容。尤其注意 v1 和 v2 的配置格式不同；仅仅为登录用户选择了某个版本，不会改变服务使用的包。
+- 不要把密码直接写入 Home Manager 的 Nix 选项：生成的配置可能进入可被本机其他用户读取的 Nix store。只在配置中引用取密命令或运行时文件，并确保服务用户可以读取秘密；邮箱地址、服务器和用户名等写入生成配置的信息也可能被其他本机用户看到。没有秘密的 store 配置文件并非不能用，但必须确认公开其中的非秘密信息是可接受的。
+- 取密命令及其依赖必须在服务环境中可用；个人用户的密钥环、D-Bus 或登录会话不一定可供系统服务使用。按上一节先干跑，再以服务身份验证真实发送。
+
+Home Manager 的具体选项和生成格式随版本变化，使用前请对照自己锁定版本的 [Himalaya 模块源码](https://github.com/nix-community/home-manager/tree/master/modules/programs/himalaya)。
 
 ## token 文件怎么来
 
