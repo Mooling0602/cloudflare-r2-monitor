@@ -289,7 +289,7 @@ RestrictSUIDSGID=true
 | `alerts.package` | package | `pkgs.himalaya` | 想钉版本或换成自己的 wrapper 就改这里 |
 | `alerts.account` | nullOr str | `null` | `null` 时用 himalaya 的默认账号 |
 | `alerts.configFile` | nullOr str | `null` | himalaya 的 `config.toml` 路径，见下 |
-| `alerts.language` | enum (`"en"`, `"zh-CN"`) | `"en"` | 告警邮件语言，`"zh-CN"` 为简体中文；仅启用告警时传给 CLI |
+| `alerts.language` | nullOr enum (`"en"`, `"zh-CN"`) | `null` | 告警邮件语言；`null` 时不传 `--alert-language`，邮件跟随服务环境的 locale。systemd 服务不继承 shell 的 `LANG`，所以实际上等于英文；要固定语言就显式设 `"en"` 或 `"zh-CN"` |
 | `alerts.repeat` | str | `"24h"` | 同一指标同一级别的最短重发间隔，`"0"` 表示每次都发 |
 | `alerts.onRecovery` | bool | `true` | 回落到 ok 时是否发「已恢复」 |
 | `alerts.dryRun` | bool | `false` | 只把邮件打到 journal，不调用 himalaya |

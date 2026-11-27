@@ -104,9 +104,9 @@ pub struct Args {
     )]
     pub alert_repeat: Repeat,
 
-    /// Language of alert emails; independent of the system locale.
-    #[arg(long, value_enum, default_value = "en", requires = "alert_to")]
-    pub alert_language: Language,
+    /// Language of alert emails; follows the shell locale when omitted.
+    #[arg(long, value_enum, requires = "alert_to")]
+    pub alert_language: Option<Language>,
 
     /// Do not announce that a metric came back under its threshold.
     #[arg(long, requires = "alert_to")]
@@ -160,7 +160,7 @@ const ZH_ARG_HELP: &[(&str, &str)] = &[
     ),
     ("alert_state", "记录上次告警的文件；不给就每次都发"),
     ("alert_repeat", "同一状态的最短静默时间，0 表示每次运行都发"),
-    ("alert_language", "告警邮件语言，与系统 locale 无关"),
+    ("alert_language", "告警邮件语言；不给就跟随 shell locale"),
     ("alert_no_recovery", "指标恢复时不发邮件"),
     ("alert_dry_run", "只打印邮件内容，不实际发送"),
 ];
@@ -423,11 +423,9 @@ mod tests {
     }
 
     #[test]
-    fn alert_language_defaults_to_english_and_rejects_unknown_values() {
-        assert_eq!(
-            Args::parse_from(["cf-r2-monitor"]).alert_language,
-            Language::English
-        );
+    fn alert_language_is_optional_and_rejects_unknown_values() {
+        // None means "follow the shell locale"; the caller decides.
+        assert_eq!(Args::parse_from(["cf-r2-monitor"]).alert_language, None);
         let args = Args::try_parse_from([
             "cf-r2-monitor",
             "--alert-to",
@@ -436,7 +434,7 @@ mod tests {
             "zh-CN",
         ])
         .unwrap();
-        assert_eq!(args.alert_language, Language::SimplifiedChinese);
+        assert_eq!(args.alert_language, Some(Language::SimplifiedChinese));
         assert!(Args::try_parse_from([
             "cf-r2-monitor",
             "--alert-to",

@@ -117,6 +117,10 @@ let
       cfg.alerts.stateFile
       "--alert-repeat"
       cfg.alerts.repeat
+    ]
+    # Left out when null so the mail follows the service environment instead of
+    # pinning a language the operator never asked for.
+    ++ lib.optionals (cfg.alerts.language != null) [
       "--alert-language"
       cfg.alerts.language
     ]
@@ -425,12 +429,15 @@ in
       };
 
       language = lib.mkOption {
-        type = lib.types.enum [ "en" "zh-CN" ];
-        default = "en";
+        type = lib.types.nullOr (lib.types.enum [ "en" "zh-CN" ]);
+        default = null;
         example = "zh-CN";
         description = ''
-          Language of alert emails, passed as `--alert-language` when alerts
-          are enabled. Defaults to English; use `zh-CN` for Simplified Chinese.
+          Language of alert emails, passed as `--alert-language` when alerts are
+          enabled. With the default, `null`, the flag is left out and the mail
+          follows the locale of the service environment. A systemd service
+          inherits no shell locale, so that means English unless the unit sets
+          `LANG`; set `"en"` or `"zh-CN"` to pin the language either way.
         '';
       };
 

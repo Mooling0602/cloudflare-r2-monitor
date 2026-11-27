@@ -125,7 +125,7 @@ async fn run() -> Result<ExitCode, String> {
     tracing::debug!("{}", output::summary(&report));
 
     let status_code = output::exit_code(report.status()) as u8;
-    let alert_result = notify(&args, &report).await;
+    let alert_result = notify(&args, &report, language).await;
 
     match alert_result {
         AlertOutcome::Skipped => Ok(ExitCode::from(status_code)),
@@ -148,7 +148,7 @@ enum AlertOutcome {
 }
 
 /// Decide whether to mail and, if so, mail.
-async fn notify(args: &Args, report: &UsageReport) -> AlertOutcome {
+async fn notify(args: &Args, report: &UsageReport, language: i18n::Language) -> AlertOutcome {
     if args.alert_to.is_empty() {
         return AlertOutcome::Skipped;
     }
@@ -189,11 +189,14 @@ async fn notify(args: &Args, report: &UsageReport) -> AlertOutcome {
         period: args.period.describe(),
     };
 
-    let message =
-        match alert::compose_in_language(report, &decision, &envelope, now, args.alert_language) {
-            Ok(message) => message,
-            Err(error) => return AlertOutcome::Failed(error.to_string()),
-        };
+    // The flag wins; without it the mail follows the shell locale, the same
+    // choice the table already made.
+    let mail_language = args.alert_language.unwrap_or(language);
+    let message = match alert::compose_in_language(report, &decision, &envelope, now, mail_language)
+    {
+        Ok(message) => message,
+        Err(error) => return AlertOutcome::Failed(error.to_string()),
+    };
 
     if args.alert_dry_run {
         // A dry run must not consume the quiet period, otherwise the first
