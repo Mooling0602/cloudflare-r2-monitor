@@ -2,9 +2,10 @@
 
 use std::path::{Path, PathBuf};
 
-use clap::Parser;
+use clap::{Command, CommandFactory, Parser};
 
-use crate::alert::{Language, Repeat};
+use crate::alert::Repeat;
+use crate::i18n::Language;
 
 /// Monitor Cloudflare R2 usage against the free tier.
 ///
@@ -114,6 +115,70 @@ pub struct Args {
     /// Print the message instead of sending it.
     #[arg(long, requires = "alert_to")]
     pub alert_dry_run: bool,
+}
+
+/// Chinese help for every argument, keyed by the id clap derives from the field
+/// name.
+///
+/// The English text lives on the fields themselves; this table replaces it when
+/// the shell locale asks for Chinese. An argument missing here keeps its English
+/// text, so a test checks every id against the real command.
+const ZH_ARG_HELP: &[(&str, &str)] = &[
+    (
+        "account_id",
+        "Cloudflare 账号 ID（32 位十六进制，不是邮箱地址）",
+    ),
+    (
+        "api_token_file",
+        "存放 API token 的文件，优先于 --api-token：token 不会出现在进程列表或 shell 历史里",
+    ),
+    ("api_token", "直接传入 API token"),
+    ("warn", "算作警告的免费额度占比，例如 0.8"),
+    ("critical", "算作严重的免费额度占比，例如 0.95"),
+    (
+        "period",
+        "统计窗口，例如 30d、7d、24h；Cloudflare 最多允许 31 天",
+    ),
+    ("json", "输出 JSON 而不是表格"),
+    ("endpoint", "覆盖 GraphQL 端点，仅供测试"),
+    (
+        "alert_to",
+        "越线时通过 himalaya 发信；可重复，或用逗号分隔多个地址",
+    ),
+    (
+        "alert_from",
+        "信封发件人，写入 From: 头；himalaya 拒绝没有它的邮件",
+    ),
+    (
+        "alert_command",
+        "实际执行的发信程序，必须从 stdin 读取原始邮件",
+    ),
+    ("alert_account", "用 himalaya 的哪个账号发送（-a）"),
+    (
+        "alert_config",
+        "himalaya 配置文件（-c），通常含 SMTP 密码，不要放进 Nix store",
+    ),
+    ("alert_state", "记录上次告警的文件；不给就每次都发"),
+    ("alert_repeat", "同一状态的最短静默时间，0 表示每次运行都发"),
+    ("alert_language", "告警邮件语言，与系统 locale 无关"),
+    ("alert_no_recovery", "指标恢复时不发邮件"),
+    ("alert_dry_run", "只打印邮件内容，不实际发送"),
+];
+
+/// Build the command with its help text in `language`.
+///
+/// clap has no translation layer, so the scaffolding it writes itself (`Usage:`,
+/// `Options:` and its parse errors) stays English. The program description and
+/// every argument explanation are replaced here.
+pub fn command(language: Language) -> Command {
+    let mut command = Args::command();
+    if language == Language::SimplifiedChinese {
+        command = command.about("检查 Cloudflare R2 用量距离免费额度还有多远");
+        for (id, text) in ZH_ARG_HELP {
+            command = command.mut_arg(*id, |arg| arg.help(*text).long_help(*text));
+        }
+    }
+    command
 }
 
 impl Args {
@@ -312,6 +377,41 @@ mod tests {
         assert!(ratio("NaN").is_err());
     }
 
+    #[test]
+    fn every_translated_argument_exists() {
+        let command = Args::command();
+        for (id, _) in ZH_ARG_HELP {
+            assert!(
+                command
+                    .get_arguments()
+                    .any(|arg| arg.get_id().as_str() == *id),
+                "ZH_ARG_HELP names an argument that does not exist: {id}"
+            );
+        }
+    }
+
+    #[test]
+    fn chinese_help_replaces_the_derived_text() {
+        let help = command(Language::SimplifiedChinese)
+            .render_help()
+            .to_string();
+        assert!(help.contains("检查 Cloudflare R2 用量"), "got:\n{help}");
+        assert!(help.contains("账号 ID"), "got:\n{help}");
+        assert!(
+            !help.contains("Cloudflare account ID (32 hex"),
+            "got:\n{help}"
+        );
+    }
+
+    #[test]
+    fn english_help_keeps_the_derived_text() {
+        let help = command(Language::English).render_help().to_string();
+        assert!(
+            help.contains("Cloudflare account ID (32 hex"),
+            "got:\n{help}"
+        );
+        assert!(!help.contains("账号 ID"), "got:\n{help}");
+    }
     #[test]
     fn defaults_are_sane() {
         let args = Args::parse_from(["cf-r2-monitor"]);

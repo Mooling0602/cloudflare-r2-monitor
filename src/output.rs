@@ -1,90 +1,203 @@
 //! Rendering a [`UsageReport`] as text or JSON.
 
+use crate::i18n::Language;
 use crate::quota::{
     humanize_bytes, Metric, MetricReading, Status, UsageReport, FREE_STORAGE_BYTES,
 };
 
-/// Render the report as an aligned text table.
-pub fn table(report: &UsageReport, period: &str) -> String {
+/// Render the report as an aligned text table in `language`.
+pub fn table(report: &UsageReport, period: &str, language: Language) -> String {
     let mut out = String::new();
+    out.push_str(&match language {
+        Language::English => format!("Cloudflare R2 free-tier usage — period {period}\n"),
+        Language::SimplifiedChinese => format!("Cloudflare R2 免费额度用量（周期 {period}）\n"),
+    });
+
+    let headers = match language {
+        Language::English => ["METRIC", "USED", "LIMIT", "USED%", "STATUS"],
+        Language::SimplifiedChinese => ["指标", "已用量", "免费额度", "占比", "状态"],
+    };
     out.push_str(&format!(
-        "Cloudflare R2 free-tier usage — period {period}\n"
-    ));
-    out.push_str(&format!(
-        "  {:<20}{:>14}{:>14}{:>9}   {}\n",
-        "METRIC", "USED", "LIMIT", "USED%", "STATUS"
+        "  {}{}{}{}   {}\n",
+        pad_right(headers[0], 20),
+        pad_left(headers[1], 14),
+        pad_left(headers[2], 14),
+        pad_left(headers[3], 9),
+        headers[4]
     ));
 
     for reading in &report.readings {
         out.push_str(&format!(
-            "  {:<20}{:>14}{:>14}{:>8.1}%   {}\n",
-            reading.metric.label(),
+            "  {}{:>14}{:>14}{:>8.1}%   {}\n",
+            pad_right(metric_label(reading.metric, language), 20),
             humandize(reading.metric, reading.used),
             humandize(reading.metric, reading.limit),
             reading.percent(),
-            reading.status.label(),
+            status_label(reading.status, language),
         ));
     }
 
     out.push('\n');
-    out.push_str(&storage_line(report));
-
-    if let Some(worst) = report.worst() {
-        out.push_str(&format!(
-            "\n{}: {} is at {:.1}% of the free tier",
-            worst.status.label().to_uppercase(),
-            worst.metric.label(),
-            worst.percent()
-        ));
-        if worst.overage() > 0 {
-            out.push_str(&format!(
-                " — past the limit by {}",
-                humandize(worst.metric, worst.overage())
-            ));
-        } else {
-            out.push_str(&format!(
-                ", {} left",
-                humandize(worst.metric, worst.remaining())
-            ));
-        }
-        out.push('\n');
-    } else {
-        out.push_str(&format!(
-            "\nOK: every metric is below the {:.0}% warning threshold\n",
-            report.thresholds.warn * 100.0
-        ));
-    }
+    out.push_str(&storage_line(report, language));
+    out.push_str(&verdict_line(report, language));
 
     out
 }
 
+/// The closing line: the worst reading, or confirmation that nothing crossed
+/// the warning threshold.
+fn verdict_line(report: &UsageReport, language: Language) -> String {
+    let Some(worst) = report.worst() else {
+        return match language {
+            Language::English => format!(
+                "\nOK: every metric is below the {:.0}% warning threshold\n",
+                report.thresholds.warn * 100.0
+            ),
+            Language::SimplifiedChinese => format!(
+                "\n正常：所有指标都低于 {:.0}% 的警告阈值\n",
+                report.thresholds.warn * 100.0
+            ),
+        };
+    };
+    let mut out = match language {
+        Language::English => format!(
+            "\n{}: {} is at {:.1}% of the free tier",
+            status_label(worst.status, language).to_uppercase(),
+            metric_label(worst.metric, language),
+            worst.percent()
+        ),
+        Language::SimplifiedChinese => format!(
+            "\n{}：{} 已占用免费额度的 {:.1}%",
+            status_label(worst.status, language),
+            metric_label(worst.metric, language),
+            worst.percent()
+        ),
+    };
+    if worst.overage() > 0 {
+        let amount = humandize(worst.metric, worst.overage());
+        out.push_str(&match language {
+            Language::English => format!(" — past the limit by {amount}"),
+            Language::SimplifiedChinese => format!("，超出 {amount}"),
+        });
+    } else {
+        let amount = humandize(worst.metric, worst.remaining());
+        out.push_str(&match language {
+            Language::English => format!(", {amount} left"),
+            Language::SimplifiedChinese => format!("，还剩 {amount}"),
+        });
+    }
+    out.push('\n');
+    out
+}
+
 /// The one line that explains why the storage percentage is not the whole story.
-fn storage_line(report: &UsageReport) -> String {
+fn storage_line(report: &UsageReport, language: Language) -> String {
     let detail = &report.storage;
     if detail.observed_days == 0 {
-        return format!(
-            "  storage: {} stored now; no dated readings, GB-month unknown\n",
-            humanize_bytes(detail.current_bytes)
-        );
+        return match language {
+            Language::English => format!(
+                "  storage: {} stored now; no dated readings, GB-month unknown\n",
+                humanize_bytes(detail.current_bytes)
+            ),
+            Language::SimplifiedChinese => format!(
+                "  存储：当前占用 {}；没有带日期的读数，GB-month 无法计算\n",
+                humanize_bytes(detail.current_bytes)
+            ),
+        };
     }
-    let mut out = format!(
-        "  storage: {} now, {} daily peak avg, {} accrued over {} day(s)\n",
-        humanize_bytes(detail.current_bytes),
-        humanize_bytes(detail.average_daily_peak),
-        humanize_bytes(detail.accrued_month_bytes),
-        detail.observed_days,
-    );
+    let mut out = match language {
+        Language::English => format!(
+            "  storage: {} now, {} daily peak avg, {} accrued over {} day(s)\n",
+            humanize_bytes(detail.current_bytes),
+            humanize_bytes(detail.average_daily_peak),
+            humanize_bytes(detail.accrued_month_bytes),
+            detail.observed_days,
+        ),
+        Language::SimplifiedChinese => format!(
+            "  存储：当前 {}，日均峰值 {}，{} 天累计 {}\n",
+            humanize_bytes(detail.current_bytes),
+            humanize_bytes(detail.average_daily_peak),
+            detail.observed_days,
+            humanize_bytes(detail.accrued_month_bytes),
+        ),
+    };
     if detail.stale_buckets > 0 {
         // Say this out loud: a bucket vanishing from the total without a word
         // looks like a bug, and the reader needs to know the bill still counts
         // the days it existed.
-        out.push_str(&format!(
-            "           ({} bucket(s) deleted during the window: excluded from {} now, still counted in the average)\n",
-            detail.stale_buckets,
-            humanize_bytes(detail.current_bytes),
-        ));
+        out.push_str(&match language {
+            Language::English => format!(
+                "           ({} bucket(s) deleted during the window: excluded from {} now, still counted in the average)\n",
+                detail.stale_buckets,
+                humanize_bytes(detail.current_bytes),
+            ),
+            Language::SimplifiedChinese => format!(
+                "           （窗口内有 {} 个桶已删除：不计入当前 {}，仍计入日均峰值）\n",
+                detail.stale_buckets,
+                humanize_bytes(detail.current_bytes),
+            ),
+        });
     }
     out
+}
+
+/// Name of a metric in the table.
+fn metric_label(metric: Metric, language: Language) -> &'static str {
+    match (language, metric) {
+        (Language::English, Metric::Storage) => "Storage",
+        (Language::English, Metric::ClassA) => "Class A operations",
+        (Language::English, Metric::ClassB) => "Class B operations",
+        (Language::SimplifiedChinese, Metric::Storage) => "存储",
+        (Language::SimplifiedChinese, Metric::ClassA) => "Class A 操作",
+        (Language::SimplifiedChinese, Metric::ClassB) => "Class B 操作",
+    }
+}
+
+/// Severity word for the table and the closing line.
+fn status_label(status: Status, language: Language) -> &'static str {
+    match (language, status) {
+        (Language::English, Status::Ok) => "ok",
+        (Language::English, Status::Warn) => "warn",
+        (Language::English, Status::Critical) => "critical",
+        (Language::SimplifiedChinese, Status::Ok) => "正常",
+        (Language::SimplifiedChinese, Status::Warn) => "警告",
+        (Language::SimplifiedChinese, Status::Critical) => "严重",
+    }
+}
+
+/// Width of `text` in terminal columns.
+///
+/// `format!` counts characters, so a Chinese label would be padded as if it
+/// were half as wide as it renders. East Asian wide characters count as two.
+fn display_width(text: &str) -> usize {
+    text.chars()
+        .map(|ch| match ch as u32 {
+            0x1100..=0x115F
+            | 0x2E80..=0xA4CF
+            | 0xAC00..=0xD7A3
+            | 0xF900..=0xFAFF
+            | 0xFE30..=0xFE6F
+            | 0xFF00..=0xFF60
+            | 0xFFE0..=0xFFE6
+            | 0x20000..=0x3FFFD => 2,
+            _ => 1,
+        })
+        .sum()
+}
+
+/// Pad `text` on the right to `width` terminal columns.
+fn pad_right(text: &str, width: usize) -> String {
+    let mut out = String::from(text);
+    out.push_str(&" ".repeat(width.saturating_sub(display_width(text))));
+    out
+}
+
+/// Pad `text` on the left to `width` terminal columns.
+fn pad_left(text: &str, width: usize) -> String {
+    format!(
+        "{}{text}",
+        " ".repeat(width.saturating_sub(display_width(text)))
+    )
 }
 
 /// Render the report as pretty-printed JSON.
@@ -245,7 +358,7 @@ mod tests {
 
     #[test]
     fn table_lists_every_metric() {
-        let text = table(&report(), "30d");
+        let text = table(&report(), "30d", Language::English);
         assert!(text.contains("Storage"));
         assert!(text.contains("Class A operations"));
         assert!(text.contains("Class B operations"));
@@ -258,20 +371,20 @@ mod tests {
     #[test]
     fn table_shows_the_latest_storage_not_the_sum_of_history() {
         // The two `assets` rows both say 3.42 GB; the total must not be 6.84 GB.
-        let text = table(&report(), "30d");
+        let text = table(&report(), "30d", Language::English);
         assert!(text.contains("4.62 GB"), "got:\n{text}");
         assert!(!text.contains("8.04 GB"), "got:\n{text}");
     }
 
     #[test]
     fn table_reports_an_ok_state() {
-        let text = table(&report(), "30d");
+        let text = table(&report(), "30d", Language::English);
         assert!(text.contains("OK:"));
     }
 
     #[test]
     fn table_explains_both_storage_figures() {
-        let text = table(&report(), "30d");
+        let text = table(&report(), "30d", Language::English);
         assert!(text.contains("now"), "got:\n{text}");
         assert!(text.contains("daily peak avg"), "got:\n{text}");
         assert!(text.contains("over 2 day(s)"), "got:\n{text}");
@@ -280,7 +393,7 @@ mod tests {
     #[test]
     fn a_two_day_window_reports_a_small_accrual() {
         // Two days of a 4.62 GB average accrues 0.31 GB-month, not 4.62.
-        let text = table(&report(), "30d");
+        let text = table(&report(), "30d", Language::English);
         assert!(text.contains("308.00 MB"), "got:\n{text}");
     }
 
@@ -301,7 +414,7 @@ mod tests {
         };
         let report = UsageReport::evaluate(snapshot, Thresholds::default());
         assert_eq!(report.storage.accrued_month_bytes, 1_000_000_000);
-        let text = table(&report, "30d");
+        let text = table(&report, "30d", Language::English);
         assert!(
             text.contains("1.00 GB accrued over 30 day(s)"),
             "got:\n{text}"
@@ -313,11 +426,73 @@ mod tests {
         let mut snapshot = report().snapshot;
         snapshot.operations[0].requests = 990_000;
         let report = UsageReport::evaluate(snapshot, Thresholds::default());
-        let text = table(&report, "30d");
+        let text = table(&report, "30d", Language::English);
         assert!(text.contains("CRITICAL:"));
         assert!(text.contains("Class A operations"));
     }
 
+    #[test]
+    fn the_chinese_table_translates_every_label() {
+        let text = table(&report(), "30d", Language::SimplifiedChinese);
+        assert!(text.contains("存储"), "got:\n{text}");
+        assert!(text.contains("Class A 操作"), "got:\n{text}");
+        assert!(text.contains("日均峰值"), "got:\n{text}");
+        assert!(text.contains("正常："), "got:\n{text}");
+        assert!(!text.contains("OK:"), "got:\n{text}");
+        assert!(!text.contains("daily peak avg"), "got:\n{text}");
+    }
+
+    #[test]
+    fn the_chinese_verdict_names_the_worst_metric() {
+        let mut snapshot = report().snapshot;
+        snapshot.operations[0].requests = 990_000;
+        let report = UsageReport::evaluate(snapshot, Thresholds::default());
+        let text = table(&report, "30d", Language::SimplifiedChinese);
+        assert!(text.contains("严重："), "got:\n{text}");
+        assert!(text.contains("已占用免费额度的"), "got:\n{text}");
+    }
+
+    #[test]
+    fn chinese_labels_are_padded_by_display_width() {
+        // A Chinese character occupies two terminal columns; counting chars
+        // would leave the numeric columns half as far right as intended.
+        assert_eq!(display_width("存储"), 4);
+        assert_eq!(display_width(&pad_right("存储", 20)), 20);
+        assert_eq!(display_width(&pad_right("Class A 操作", 20)), 20);
+        assert_eq!(display_width(&pad_left("已用量", 14)), 14);
+        assert_eq!(pad_right("Class A operations", 20), "Class A operations  ");
+    }
+
+    #[test]
+    fn the_chinese_table_mentions_a_deleted_bucket() {
+        let mut storage: Vec<StoragePoint> = (1..=10)
+            .map(|day| StoragePoint {
+                bucket_name: "assets".into(),
+                payload_size: 1_000_000_000,
+                metadata_size: 0,
+                object_count: 0,
+                upload_count: 0,
+                at: Some(at(day)),
+            })
+            .collect();
+        storage.extend((1..=5).map(|day| StoragePoint {
+            bucket_name: "backups".into(),
+            payload_size: 2_000_000_000,
+            metadata_size: 0,
+            object_count: 0,
+            upload_count: 0,
+            at: Some(at(day)),
+        }));
+        let report = UsageReport::evaluate(
+            R2Snapshot {
+                storage,
+                ..Default::default()
+            },
+            Thresholds::default(),
+        );
+        let text = table(&report, "30d", Language::SimplifiedChinese);
+        assert!(text.contains("个桶已删除"), "got:\n{text}");
+    }
     #[test]
     fn json_round_trips_and_uses_snake_case() {
         let text = json(&report()).unwrap();
@@ -360,7 +535,7 @@ mod tests {
             },
             Thresholds::default(),
         );
-        let text = table(&report, "30d");
+        let text = table(&report, "30d", Language::English);
         assert!(
             text.contains("1 bucket(s) deleted during the window"),
             "got:\n{text}"
@@ -371,7 +546,7 @@ mod tests {
 
     #[test]
     fn a_window_without_deletions_says_nothing_about_them() {
-        let text = table(&report(), "30d");
+        let text = table(&report(), "30d", Language::English);
         assert!(!text.contains("deleted during the window"), "got:\n{text}");
     }
 

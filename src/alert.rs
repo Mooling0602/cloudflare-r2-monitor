@@ -20,6 +20,7 @@ use std::process::Stdio;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::Language;
 use crate::quota::{humanize_bytes, Metric, MetricReading, Status, UsageReport};
 
 /// How long an unchanged condition stays quiet before repeating.
@@ -338,17 +339,6 @@ pub enum ComposeError {
     BadAddress(String),
     #[error("the message would contain a bare newline in a header value: `{0}`")]
     HeaderInjection(String),
-}
-
-/// Language used for alert emails.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
-pub enum Language {
-    /// English.
-    #[value(name = "en")]
-    English,
-    /// Simplified Chinese.
-    #[value(name = "zh-CN")]
-    SimplifiedChinese,
 }
 
 /// Render an English message as raw RFC 5322 text.

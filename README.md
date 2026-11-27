@@ -115,6 +115,8 @@ OK: every metric is below the 80% warning threshold
 
 加 `--json` 输出机器可读版本，字段说明见 [CONTEXT.md](CONTEXT.md#json-字段)。
 
+**界面语言**跟着 shell 走：`LC_ALL` 优先，其次 `LC_MESSAGES`，最后 `LANG`。中文 locale（`zh_CN.UTF-8` 之类）显示简体中文，其它都是英文。没有语言参数，`--json` 的字段名、退出码和错误信息也不随语言变化 —— 换 locale 不会改变脚本看到的结果。
+
 ## 退出码
 
 | 退出码 | 含义 |
@@ -166,7 +168,7 @@ cf-r2-monitor \
 | `--alert-account` | himalaya 默认账号 | 传给 `-a` |
 | `--alert-config` | himalaya 默认配置 | 传给 `-c` |
 | `--alert-state` | 无（不去重） | 去重状态文件 |
-| `--alert-language` | `en` | 告警邮件语言；支持 `en` 和 `zh-CN`（简体中文），不依赖系统 locale |
+| `--alert-language` | `en` | 告警邮件语言；支持 `en` 和 `zh-CN`（简体中文），与屏幕输出和系统 locale 都无关 |
 | `--alert-repeat` | `24h` | 同指标同级别的最短重发间隔；`0` 为每次都发 |
 | `--alert-no-recovery` | 未设 | 关掉「已恢复」邮件 |
 | `--alert-dry-run` | 未设 | 只把邮件打到 stdout，不调用 himalaya |

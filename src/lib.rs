@@ -3,6 +3,7 @@
 pub mod alert;
 pub mod cli;
 pub mod cloudflare;
+pub mod i18n;
 pub mod model;
 pub mod output;
 pub mod quota;

@@ -3,12 +3,12 @@
 use std::process::ExitCode;
 
 use chrono::Utc;
-use clap::Parser;
+use clap::FromArgMatches;
 use cloudflare_r2_monitor::alert::{self, AlertState, Decision, Envelope, Mailer};
 use cloudflare_r2_monitor::cloudflare::{Client, Credentials, Window};
 use cloudflare_r2_monitor::{
-    cli::Args,
-    output,
+    cli::{self, Args},
+    i18n, output,
     quota::{Thresholds, UsageReport},
 };
 use tracing_subscriber::EnvFilter;
@@ -47,10 +47,14 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> Result<ExitCode, String> {
+    // The help text follows the shell locale, so the command is built here
+    // rather than parsed straight from the derive.
+    let language = i18n::Language::from_env();
+
     // Parse by hand so a usage error exits 3 rather than clap's default 2,
     // which would collide with the "critical" status code.
-    let args = match Args::try_parse() {
-        Ok(args) => args,
+    let matches = match cli::command(language).try_get_matches() {
+        Ok(matches) => matches,
         Err(error) => {
             use clap::error::ErrorKind;
             let _ = error.print();
@@ -59,6 +63,13 @@ async fn run() -> Result<ExitCode, String> {
                 ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => ExitCode::SUCCESS,
                 _ => ExitCode::from(EXIT_ERROR),
             });
+        }
+    };
+    let args = match Args::from_arg_matches(&matches) {
+        Ok(args) => args,
+        Err(error) => {
+            let _ = error.print();
+            return Ok(ExitCode::from(EXIT_ERROR));
         }
     };
 
@@ -105,7 +116,10 @@ async fn run() -> Result<ExitCode, String> {
             output::json(&report).map_err(|e| format!("could not serialise the report: {e}"))?
         );
     } else {
-        print!("{}", output::table(&report, &args.period.describe()));
+        print!(
+            "{}",
+            output::table(&report, &args.period.describe(), language)
+        );
     }
 
     tracing::debug!("{}", output::summary(&report));
