@@ -1,60 +1,82 @@
 name: release
 
-# 只在推 tag 时触发。tag 形如 0.1.0（不带 v），与 Cargo.toml 的 version、CHANGELOG 的 H2 标题
-# 三者必须完全一致 —— release-note.sh 就是靠这个标题找发布说明的，对不上会直接失败。
+# 发布由提交驱动。推送到 main 的提交主题恰好是 `release: v0.2.0` 时，这个工作流自己
+# 创建并推送 `0.2.0` 标签，所以标签只会落在发布提交上，注释也只会由脚本生成。
+# 其它推送只跑 detect 就结束。
 on:
   push:
-    tags:
-      - '[0-9]+.[0-9]+.[0-9]+'
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: '要发布的 tag（形如 0.1.0），必须是已存在的 tag'
-        required: true
-        type: string
+    branches: [main]
 
 permissions:
-  # 创建 Release 与上传资产需要写权限。除此之外不申请任何多余权限。
+  # 推送标签、创建 Release 与上传资产都需要写权限。除此之外不申请任何多余权限。
   contents: write
+
+concurrency:
+  # 标签和 Release 都按名字创建，两次发布同时跑只会互相踩。
+  group: release
+  cancel-in-progress: false
 
 env:
   # 与 ci.yml 保持一致。
   CACHIX_CACHE_NAME: mooling
 
 jobs:
-  # 先做一次完整校验：版本号三处一致、CHANGELOG 有对应小节、测试通过。
-  # 校验失败就不该产出任何资产 —— 一个 tag 指向坏代码比没有 Release 更糟。
-  verify:
-    name: verify
+  # 从触发提交的主题里取版本号。主题不是 `release: v<x.y.z>` 时什么都不做，
+  # 这就是这个工作流可以挂在 main 每次推送上的原因。
+  detect:
+    name: detect
     runs-on: ubuntu-22.04
     outputs:
-      version: ${{ steps.version.outputs.version }}
+      release: ${{ steps.subject.outputs.release }}
+      version: ${{ steps.subject.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the commit subject
+        id: subject
+        run: |
+          set -eu
+          subject="$(git log -1 --format=%s HEAD)"
+          echo "触发提交：${{ github.sha }}"
+          echo "提交主题：${subject}"
+          if printf '%s\n' "$subject" | grep -Eqx 'release: v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?'; then
+            echo "release=true" >> "$GITHUB_OUTPUT"
+            echo "version=${subject#release: v}" >> "$GITHUB_OUTPUT"
+            echo "这是一个发布提交。"
+          else
+            echo "release=false" >> "$GITHUB_OUTPUT"
+            echo "这不是发布提交，跳过发布。"
+          fi
+
+  # 先做一次完整校验：Cargo.toml 的版本、CHANGELOG 的对应小节、测试。
+  # 校验失败就不该打标签 —— 一个标签指向坏代码比没有 Release 更糟。
+  verify:
+    name: verify
+    needs: detect
+    if: needs.detect.outputs.release == 'true'
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
 
       - name: Resolve version
-        id: version
         run: |
           set -eu
-          # 触发方式决定版本来源：tag 推送取 tag 名，手动触发取输入。
-          ref="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-          echo "version=${ref}" >> "$GITHUB_OUTPUT"
-          echo "发布版本：${ref}"
+          echo "发布版本：${{ needs.detect.outputs.version }}"
 
       - name: Version must match Cargo.toml
         run: |
           set -eu
-          want="${{ steps.version.outputs.version }}"
+          want="${{ needs.detect.outputs.version }}"
           got="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
           if [ "$want" != "$got" ]; then
-            echo "::error::tag 是 ${want}，而 Cargo.toml 里是 ${got}；两者必须一致。"
+            echo "::error::发布提交要求版本 ${want}，而 Cargo.toml 里是 ${got}；两者必须一致。"
             exit 1
           fi
 
       - name: CHANGELOG must describe this version
         run: |
           set -eu
-          want="${{ steps.version.outputs.version }}"
+          want="${{ needs.detect.outputs.version }}"
           if ! grep -qxF "## ${want}" CHANGELOG.md; then
             echo "::error::CHANGELOG.md 里没有 '## ${want}' 小节，发布说明无从生成。"
             exit 1
@@ -69,13 +91,40 @@ jobs:
       - name: cargo test
         run: cargo test --all-targets
 
+      # 这个脚本马上要推一个撤不回的标签，先用它自己的测试验一遍。
+      - name: Test the release tag script
+        run: .github/scripts/test-release-tag.sh
+
+  # 校验通过之后才打标签，这样一个坏提交不会留下标签。
+  # 脚本自己核对提交主题、标签类型、指向和注释；已有标签只在完全一致时复用，
+  # 不一致就失败，永远不会移动或重建一个已发布的标签。
+  tag:
+    name: tag
+    needs: [detect, verify]
+    if: needs.detect.outputs.release == 'true'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # 标签必须指向触发本次运行的提交，所以显式 checkout 它而不是碰运气。
+          ref: ${{ github.sha }}
+          # 脚本自己核对 HEAD 与 GITHUB_SHA，深克隆只会拖慢这一步。
+          fetch-depth: 1
+
+      - name: Create or verify the release tag
+        env:
+          VERSION: ${{ needs.detect.outputs.version }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: .github/scripts/release-tag.sh
+
   # 这个 job 只负责把产物推进 Cachix，不发 Release 资产。
   # nix 构建出来的二进制，ELF interpreter 与 RUNPATH 都指向 /nix/store 里的 glibc，
   # 在没有对应 store 路径的机器上根本起不来（实测报 cannot execute: required file not found）。
   # NixOS 用户本来就走 flake 装，不需要这个文件。
   cache-linux:
     name: cache (x86_64-linux)
-    needs: verify
+    needs: [detect, verify]
+    if: needs.detect.outputs.release == 'true'
     runs-on: ubuntu-22.04
     env:
       CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
@@ -109,7 +158,8 @@ jobs:
   # 这样不需要维护交叉链接器，产物也和实际运行环境一致。
   binary:
     name: binary (${{ matrix.name }})
-    needs: verify
+    needs: [detect, verify, tag]
+    if: needs.detect.outputs.release == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       # 一个平台挂了不要连带取消其它平台，这样一次运行就能看到所有平台的错误。
@@ -257,7 +307,8 @@ jobs:
   # cache-linux 不在 needs 里：它只负责推二进制缓存，失败了也不该挡住发布。
   publish:
     name: publish
-    needs: [verify, binary]
+    needs: [detect, verify, tag, binary]
+    if: needs.detect.outputs.release == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -276,7 +327,7 @@ jobs:
         id: notes
         run: |
           set -eu
-          version="${{ needs.verify.outputs.version }}"
+          version="${{ needs.detect.outputs.version }}"
           previous="$(git tag --sort=-v:refname | grep -vx "${version}" | head -1 || true)"
           [ -n "$previous" ] || previous="-"
           echo "上一个 tag：${previous}"
@@ -290,7 +341,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eu
-          version="${{ needs.verify.outputs.version }}"
+          version="${{ needs.detect.outputs.version }}"
           repo="${{ github.repository }}"
           ls -l dist
 

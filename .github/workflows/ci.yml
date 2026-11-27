@@ -52,6 +52,11 @@ jobs:
         if: ${{ !cancelled() }}
         run: cargo test --all-targets
 
+      # 标签脚本守的是发布流程，它的测试完全离线，几秒就跑完。
+      - name: Test the release tag script
+        if: ${{ !cancelled() }}
+        run: .github/scripts/test-release-tag.sh
+
   # nix 侧验证 flake 真的能求值、能构建。和 cargo 的 job 并行，互不阻塞。
   nix:
     name: nix build (${{ matrix.system }})
