@@ -117,6 +117,8 @@ let
       cfg.alerts.stateFile
       "--alert-repeat"
       cfg.alerts.repeat
+      "--alert-language"
+      cfg.alerts.language
     ]
     ++ lib.optional (!cfg.alerts.onRecovery) "--alert-no-recovery"
     ++ lib.optional cfg.alerts.dryRun "--alert-dry-run"
@@ -419,6 +421,16 @@ in
           it would end up world-readable in `/nix/store`. A plain string only
           contributes the path text. Keep the file outside the store, e.g. under
           `/run/secrets` managed by sops-nix or agenix.
+        '';
+      };
+
+      language = lib.mkOption {
+        type = lib.types.enum [ "en" "zh-CN" ];
+        default = "en";
+        example = "zh-CN";
+        description = ''
+          Language of alert emails, passed as `--alert-language` when alerts
+          are enabled. Defaults to English; use `zh-CN` for Simplified Chinese.
         '';
       };
 

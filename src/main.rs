@@ -175,10 +175,11 @@ async fn notify(args: &Args, report: &UsageReport) -> AlertOutcome {
         period: args.period.describe(),
     };
 
-    let message = match alert::compose(report, &decision, &envelope, now) {
-        Ok(message) => message,
-        Err(error) => return AlertOutcome::Failed(error.to_string()),
-    };
+    let message =
+        match alert::compose_in_language(report, &decision, &envelope, now, args.alert_language) {
+            Ok(message) => message,
+            Err(error) => return AlertOutcome::Failed(error.to_string()),
+        };
 
     if args.alert_dry_run {
         // A dry run must not consume the quiet period, otherwise the first

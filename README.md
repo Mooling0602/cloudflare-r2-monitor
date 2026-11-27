@@ -152,6 +152,7 @@ cf-r2-monitor \
   --api-token-file /run/secrets/cf-r2-token \
   --alert-to ops@example.org \
   --alert-from monitor@example.org \
+  --alert-language zh-CN \
   --alert-state /var/lib/cloudflare-r2-monitor/alert-state.json
 ```
 
@@ -165,6 +166,7 @@ cf-r2-monitor \
 | `--alert-account` | himalaya 默认账号 | 传给 `-a` |
 | `--alert-config` | himalaya 默认配置 | 传给 `-c` |
 | `--alert-state` | 无（不去重） | 去重状态文件 |
+| `--alert-language` | `en` | 告警邮件语言；支持 `en` 和 `zh-CN`（简体中文），不依赖系统 locale |
 | `--alert-repeat` | `24h` | 同指标同级别的最短重发间隔；`0` 为每次都发 |
 | `--alert-no-recovery` | 未设 | 关掉「已恢复」邮件 |
 | `--alert-dry-run` | 未设 | 只把邮件打到 stdout，不调用 himalaya |
@@ -245,6 +247,7 @@ token 通过 systemd 的 `LoadCredential` 从文件注入，**不会进 nix stor
     enable = true;
     to = [ "ops@example.org" ];
     from = "monitor@example.org";
+    language = "zh-CN";
     configFile = "/run/secrets/himalaya.toml";
   };
 }

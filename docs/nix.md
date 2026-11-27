@@ -289,6 +289,7 @@ RestrictSUIDSGID=true
 | `alerts.package` | package | `pkgs.himalaya` | 想钉版本或换成自己的 wrapper 就改这里 |
 | `alerts.account` | nullOr str | `null` | `null` 时用 himalaya 的默认账号 |
 | `alerts.configFile` | nullOr str | `null` | himalaya 的 `config.toml` 路径，见下 |
+| `alerts.language` | enum (`"en"`, `"zh-CN"`) | `"en"` | 告警邮件语言，`"zh-CN"` 为简体中文；仅启用告警时传给 CLI |
 | `alerts.repeat` | str | `"24h"` | 同一指标同一级别的最短重发间隔，`"0"` 表示每次都发 |
 | `alerts.onRecovery` | bool | `true` | 回落到 ok 时是否发「已恢复」 |
 | `alerts.dryRun` | bool | `false` | 只把邮件打到 journal，不调用 himalaya |
@@ -307,6 +308,7 @@ RestrictSUIDSGID=true
       enable = true;
       to = [ "ops@example.org" ];
       from = "monitor@example.org";
+      language = "zh-CN";
       configFile = "/run/secrets/himalaya.toml";
     };
   };

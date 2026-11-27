@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
-use crate::alert::Repeat;
+use crate::alert::{Language, Repeat};
 
 /// Monitor Cloudflare R2 usage against the free tier.
 ///
@@ -102,6 +102,10 @@ pub struct Args {
         requires = "alert_to"
     )]
     pub alert_repeat: Repeat,
+
+    /// Language of alert emails; independent of the system locale.
+    #[arg(long, value_enum, default_value = "en", requires = "alert_to")]
+    pub alert_language: Language,
 
     /// Do not announce that a metric came back under its threshold.
     #[arg(long, requires = "alert_to")]
@@ -316,6 +320,31 @@ mod tests {
         assert_eq!(args.period.hours, 720);
         assert!(!args.json);
         assert!(args.validate().is_ok());
+    }
+
+    #[test]
+    fn alert_language_defaults_to_english_and_rejects_unknown_values() {
+        assert_eq!(
+            Args::parse_from(["cf-r2-monitor"]).alert_language,
+            Language::English
+        );
+        let args = Args::try_parse_from([
+            "cf-r2-monitor",
+            "--alert-to",
+            "ops@example.org",
+            "--alert-language",
+            "zh-CN",
+        ])
+        .unwrap();
+        assert_eq!(args.alert_language, Language::SimplifiedChinese);
+        assert!(Args::try_parse_from([
+            "cf-r2-monitor",
+            "--alert-to",
+            "ops@example.org",
+            "--alert-language",
+            "fr"
+        ])
+        .is_err());
     }
 
     #[test]

@@ -340,16 +340,38 @@ pub enum ComposeError {
     HeaderInjection(String),
 }
 
-/// Render the message as raw RFC 5322 text.
-///
-/// Line endings are `\n` on purpose: `himalaya` normalises them to CRLF
-/// itself, and doing it here would only make the dry-run output harder to
-/// read in a terminal.
+/// Language used for alert emails.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum Language {
+    /// English.
+    #[value(name = "en")]
+    English,
+    /// Simplified Chinese.
+    #[value(name = "zh-CN")]
+    SimplifiedChinese,
+}
+
+/// Render an English message as raw RFC 5322 text.
 pub fn compose(
     report: &UsageReport,
     decision: &Decision,
     envelope: &Envelope,
     now: DateTime<Utc>,
+) -> Result<String, ComposeError> {
+    compose_in_language(report, decision, envelope, now, Language::English)
+}
+
+/// Render the message as raw RFC 5322 text.
+///
+/// Line endings are `\n` on purpose: `himalaya` normalises them to CRLF
+/// itself, and doing it here would only make the dry-run output harder to
+/// read in a terminal.
+pub fn compose_in_language(
+    report: &UsageReport,
+    decision: &Decision,
+    envelope: &Envelope,
+    now: DateTime<Utc>,
+    language: Language,
 ) -> Result<String, ComposeError> {
     if envelope.to.is_empty() {
         return Err(ComposeError::NoRecipient);
@@ -379,10 +401,20 @@ pub fn compose(
         }
     };
 
+    let subject = match language {
+        Language::English => subject,
+        Language::SimplifiedChinese => chinese_subject(decision),
+    };
+
     let mut message = String::new();
     push_header(&mut message, "From", Some(&envelope.from))?;
     push_header(&mut message, "To", Some(&envelope.to.join(", ")))?;
-    push_header(&mut message, "Subject", Some(&subject))?;
+    if subject.contains(['\n', '\r']) {
+        return Err(ComposeError::HeaderInjection("Subject".into()));
+    }
+    message.push_str("Subject: ");
+    message.push_str(&encode_subject(&subject));
+    message.push('\n');
     push_header(&mut message, "Date", Some(&now.to_rfc2822()))?;
     push_header(
         &mut message,
@@ -402,7 +434,10 @@ pub fn compose(
     )?;
     push_header(&mut message, "Content-Transfer-Encoding", Some("8bit"))?;
     message.push('\n');
-    message.push_str(&body(report, decision, &envelope.period));
+    message.push_str(&match language {
+        Language::English => body(report, decision, &envelope.period),
+        Language::SimplifiedChinese => chinese_body(report, decision, &envelope.period),
+    });
     Ok(message)
 }
 
@@ -505,6 +540,138 @@ fn body(report: &UsageReport, decision: &Decision, period: &str) -> String {
         report.thresholds.critical * 100.0,
     ));
     out.push_str("\n-- \ncf-r2-monitor: Cloudflare R2 free-tier usage monitor\n");
+    out
+}
+
+fn chinese_metric(metric: Metric) -> &'static str {
+    match metric {
+        Metric::Storage => "存储",
+        Metric::ClassA => "A 类操作",
+        Metric::ClassB => "B 类操作",
+    }
+}
+
+fn chinese_status(status: Status) -> &'static str {
+    match status {
+        Status::Ok => "正常",
+        Status::Warn => "警告",
+        Status::Critical => "严重",
+    }
+}
+
+fn chinese_subject(decision: &Decision) -> String {
+    match decision {
+        Decision::Quiet => "[r2-monitor] 用量正常".into(),
+        Decision::Recovered { .. } => "[r2-monitor] 已恢复：R2 用量低于阈值".into(),
+        Decision::Alert { reasons, .. } => {
+            let worst = reasons
+                .iter()
+                .map(|reason| reason.status)
+                .max()
+                .unwrap_or(Status::Warn);
+            let names = reasons
+                .iter()
+                .map(|reason| chinese_metric(reason.metric))
+                .collect::<Vec<_>>()
+                .join("、");
+            format!("[r2-monitor] {}：{names}", chinese_status(worst))
+        }
+    }
+}
+
+// Split on UTF-8 character boundaries to keep each encoded word below 75 bytes.
+fn encode_subject(subject: &str) -> String {
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let chars: Vec<char> = subject.chars().collect();
+    chars
+        .chunks(9)
+        .map(|chunk| {
+            let text: String = chunk.iter().collect();
+            format!("=?UTF-8?B?{}?=", STANDARD.encode(text))
+        })
+        .collect::<Vec<_>>()
+        .join("\n ")
+}
+
+fn chinese_body(report: &UsageReport, decision: &Decision, period: &str) -> String {
+    let mut out = String::new();
+    match decision {
+        Decision::Quiet => out.push_str("没有需要报告的事项。\n\n"),
+        Decision::Recovered { previous } => {
+            let names = previous
+                .iter()
+                .map(|metric| chinese_metric(*metric))
+                .collect::<Vec<_>>()
+                .join("、");
+            out.push_str(&format!(
+                "R2 用量已回到配置的阈值以下。\n\n已恢复：{names}\n\n"
+            ));
+        }
+        Decision::Alert { reasons, repeated } => {
+            if *repeated {
+                out.push_str("这是重复提醒：告警状态未变化。\n\n");
+            } else {
+                out.push_str("至少一项 R2 指标已达到配置的阈值。\n\n");
+            }
+            for reason in reasons {
+                let reading = &reason.reading;
+                out.push_str(&format!(
+                    "{}已使用免费额度的 {:.1}%（{}）",
+                    chinese_metric(reading.metric),
+                    reading.percent(),
+                    chinese_status(reason.status)
+                ));
+                if reading.overage() > 0 {
+                    out.push_str(&format!(
+                        "；超出额度 {}",
+                        humanize_metric(reading.metric, reading.overage())
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "；剩余 {}",
+                        humanize_metric(reading.metric, reading.remaining())
+                    ));
+                }
+                if reason.repeated {
+                    out.push_str("［重复］");
+                }
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+    }
+    out.push_str(&format!("免费额度，查询周期 {period}\n"));
+    for reading in &report.readings {
+        out.push_str(&format!(
+            "  {}：{} / {}，{:.1}%（{}）\n",
+            chinese_metric(reading.metric),
+            humanize_metric(reading.metric, reading.used),
+            humanize_metric(reading.metric, reading.limit),
+            reading.percent(),
+            chinese_status(reading.status)
+        ));
+    }
+    let storage = &report.storage;
+    if storage.observed_days == 0 {
+        out.push_str(&format!(
+            "\n存储：当前 {}；没有带日期的读数，GB-month 未知。\n",
+            humanize_bytes(storage.current_bytes)
+        ));
+    } else {
+        out.push_str(&format!(
+            "\n存储：当前 {}，日峰值平均 {}，{} 天累计 {}。\n",
+            humanize_bytes(storage.current_bytes),
+            humanize_bytes(storage.average_daily_peak),
+            storage.observed_days,
+            humanize_bytes(storage.accrued_month_bytes)
+        ));
+    }
+    out.push_str(&format!(
+        "阈值：警告 {:.0}%，严重 {:.0}%。\n",
+        report.thresholds.warn * 100.0,
+        report.thresholds.critical * 100.0
+    ));
+    out.push_str("\n-- \ncf-r2-monitor：Cloudflare R2 免费额度监控\n");
     out
 }
 
@@ -934,12 +1101,85 @@ mod tests {
         let message = compose(&report, &decision, &envelope(), at(25)).unwrap();
         assert!(message.starts_with("From: monitor@example.org\n"));
         assert!(message.contains("\nTo: ops@example.org\n"));
-        assert!(message.contains("\nSubject: [r2-monitor] critical — class A ops\n"));
+        assert_eq!(
+            decoded_subject(&message),
+            "[r2-monitor] critical — class A ops"
+        );
         assert!(message.contains("\nMessage-ID: <"));
         assert!(message.contains("\nContent-Type: text/plain; charset=utf-8\n"));
         // Blank line separates headers from the body.
         assert!(message.contains("\n\nAt least one R2 metric"));
         assert!(message.contains("Class A operations is at 98.0%"));
+    }
+
+    fn decoded_subject(message: &str) -> String {
+        use base64::{engine::general_purpose::STANDARD, Engine as _};
+        let headers = message.split("\n\n").next().unwrap();
+        let lines: Vec<_> = headers
+            .lines()
+            .skip_while(|line| !line.starts_with("Subject: "))
+            .take_while(|line| line.starts_with("Subject: ") || line.starts_with(' '))
+            .collect();
+        assert!(lines.iter().all(|line| line.len() <= 76));
+        let encoded = lines.join(" ");
+        let mut bytes = Vec::new();
+        for word in encoded
+            .strip_prefix("Subject: ")
+            .unwrap()
+            .split_whitespace()
+        {
+            assert!(word.len() <= 75);
+            let payload = word
+                .strip_prefix("=?UTF-8?B?")
+                .unwrap()
+                .strip_suffix("?=")
+                .unwrap();
+            bytes.extend(STANDARD.decode(payload).unwrap());
+        }
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn chinese_alert_and_recovery_are_localized() {
+        let report = report(980_000, 100);
+        let decision = decide(
+            &report,
+            &AlertState::default(),
+            at(25),
+            Repeat::parse("24h").unwrap(),
+        );
+        let message = compose_in_language(
+            &report,
+            &decision,
+            &envelope(),
+            at(25),
+            Language::SimplifiedChinese,
+        )
+        .unwrap();
+        assert!(decoded_subject(&message).contains("严重：A 类操作"));
+        assert!(message.contains("至少一项 R2 指标"));
+        assert!(message.contains("A 类操作已使用免费额度的 98.0%"));
+        assert!(message.contains("阈值：警告 80%，严重 95%"));
+        let recovery = Decision::Recovered {
+            previous: vec![Metric::Storage, Metric::ClassB],
+        };
+        let message = compose_in_language(
+            &report,
+            &recovery,
+            &envelope(),
+            at(26),
+            Language::SimplifiedChinese,
+        )
+        .unwrap();
+        assert!(decoded_subject(&message).contains("已恢复"));
+        assert!(message.contains("已恢复：存储、B 类操作"));
+    }
+
+    #[test]
+    fn encoded_subject_handles_four_byte_characters() {
+        let subject = "😀".repeat(30);
+        let message = format!("Subject: {}\n\n", encode_subject(&subject));
+        assert_eq!(decoded_subject(&message), subject);
     }
 
     #[test]
@@ -949,7 +1189,7 @@ mod tests {
             previous: vec![Metric::ClassA],
         };
         let message = compose(&good, &decision, &envelope(), at(26)).unwrap();
-        assert!(message.contains("[r2-monitor] recovered"));
+        assert!(decoded_subject(&message).contains("[r2-monitor] recovered"));
         assert!(message.contains("Recovered: class A ops"));
     }
 
