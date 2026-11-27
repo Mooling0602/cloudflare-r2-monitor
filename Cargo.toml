@@ -1,6 +1,6 @@
 [package]
 name = "cloudflare-r2-monitor"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 # 依赖树里 MSRV 最高的是 icu_* 2.4（经 url → idna 引入），要求 1.88。
 rust-version = "1.88"

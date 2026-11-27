@@ -19,6 +19,26 @@ CI 只负责生成新版本的发布说明，不会回头改旧版本的 Release
 
 **full_changelog!**
 
+## 0.1.1
+
+告警邮件和终端输出都跟随 shell 的语言环境，邮件也可以显式指定语言；Release 改由 CI 从发布提交自动打标签。
+
+### Features
+
+- 告警邮件支持简体中文：`--alert-language zh-CN` 同时翻译主题和正文，`en` 保持英文
+- 未指定 `--alert-language` 时，告警邮件跟随 shell locale，与屏幕输出用同一套判断
+- 终端表格、结论行和 `--help` 跟随 `LC_ALL` > `LC_MESSAGES` > `LANG`：中文 locale 显示简体中文，其余英文；没有新增语言参数，`--json` 的键名、退出码和错误信息不受影响
+- Release 附裸二进制：Linux（x86_64 / aarch64）、macOS（Intel / Apple Silicon）、Windows（x64 / arm64），不打包成压缩包
+
+### 变更
+
+- NixOS 模块的 `alerts.language` 默认值从 `"en"` 改为 `null`：为 `null` 时不传 `--alert-language`，邮件跟随服务环境；要固定语言就显式设 `"en"` 或 `"zh-CN"`
+- 发布流程改由 CI 驱动：推送到 main 的提交主题为 `release: v<x.y.z>` 时自动创建并推送附注标签，标签注释固定为 `commit <短哈希>`
+
+### 修复
+
+- 移除文档中泄漏的主机名，并加检查防止再写回来
+
 ## 0.1.0
 
 首个可用版本。它只做用量读取和告警，拿到的是只读 token，全程不碰 Cloudflare 的写接口。
